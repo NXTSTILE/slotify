@@ -97,7 +97,7 @@ export default function HomePage() {
               </span>
             </h1>
             <p className="mt-6 text-lg text-muted-foreground">
-              Customers text your salon's WhatsApp number and book appointments in seconds.
+              Customers text your salon&apos;s WhatsApp number and book appointments in seconds.
               You manage everything from a clean dashboard. No app. No hassle.
             </p>
             <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">

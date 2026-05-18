@@ -494,7 +494,7 @@ export async function updateAppointmentStatusAction(formData: FormData): Promise
   }
 }
 
-export async function markNotificationsReadAction() {
+export async function markNotificationsReadAction(_formData?: FormData): Promise<void> {
   try {
     const { supabase, salon } = await requireSalon();
     const { error } = await supabase
@@ -503,12 +503,12 @@ export async function markNotificationsReadAction() {
       .eq("salon_id", salon.id)
       .eq("is_read", false);
     if (error) {
-      return { error: error.message };
+      console.error("[markNotificationsReadAction]", error.message);
+      return;
     }
     revalidatePath("/dashboard");
-    return { ok: true as const };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Failed" };
+    console.error("[markNotificationsReadAction]", e);
   }
 }
 
@@ -525,6 +525,15 @@ export async function addWalkInBookingAction(formData: FormData) {
       .upsert({ salon_id: salon.id, name, phone }, { onConflict: "salon_id,phone" })
       .select("id")
       .single();
+
+    const { data: dbServices } = await supabase
+      .from("services")
+      .select("id, price, duration_minutes")
+      .in("id", serviceIds);
+
+    if (!dbServices || dbServices.length === 0) {
+      return { error: "No services found." };
+    }
 
     const { data: lastApt } = await supabase
       .from("appointments")
@@ -543,12 +552,19 @@ export async function addWalkInBookingAction(formData: FormData) {
       startTime = addMinutes(new Date(lastApt.end_time), 2);
     }
 
+    const totalDuration = dbServices.reduce((sum, s) => sum + s.duration_minutes, 0);
+    const totalPrice = dbServices.reduce((sum, s) => sum + s.price, 0);
+    const endTime = addMinutes(startTime, totalDuration);
+
     const { data: apt, error: aptErr } = await supabase
       .from("appointments")
       .insert({
         salon_id: salon.id,
         customer_id: customer!.id,
         start_time: startTime.toISOString(),
+        end_time: endTime.toISOString(),
+        total_duration_minutes: totalDuration,
+        total_price: totalPrice,
         status: "confirmed"
       })
       .select("id")
@@ -556,10 +572,12 @@ export async function addWalkInBookingAction(formData: FormData) {
 
     if (aptErr) throw aptErr;
 
-    for (const sId of serviceIds) {
+    for (const service of dbServices) {
       await supabase.from("appointment_services").insert({
         appointment_id: apt.id,
-        service_id: sId
+        service_id: service.id,
+        price_at_booking: service.price,
+        duration_at_booking: service.duration_minutes
       });
     }
 
@@ -567,6 +585,7 @@ export async function addWalkInBookingAction(formData: FormData) {
     return { ok: true as const, startTime: startTime.toISOString() };
 
   } catch (e) {
+    console.error("[addWalkInBookingAction] error:", e);
     return { error: "Failed to add walk-in." };
   }
 }

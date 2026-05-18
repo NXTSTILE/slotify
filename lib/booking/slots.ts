@@ -4,7 +4,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/types/database";
 import {
   APPOINTMENT_BUFFER_MINUTES,
-  MAX_BOOKING_DAYS_AHEAD,
   SALON_TIMEZONE,
   SAME_DAY_MIN_LEAD_HOURS,
 } from "@/lib/constants";

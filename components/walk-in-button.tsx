@@ -59,12 +59,12 @@ export function WalkInButton({ services }: { services: Service[] }) {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
+      <DialogTrigger render={
         <Button className="gap-2">
           <Plus className="h-4 w-4" />
           Add Walk-in
         </Button>
-      </DialogTrigger>
+      } />
       <DialogContent className="sm:max-w-[425px]">
         <form onSubmit={handleSubmit}>
           <DialogHeader>

@@ -21,11 +21,11 @@ export default function LoginPage() {
         </div>
         <div className="space-y-4">
           <blockquote className="text-2xl font-medium leading-snug">
-            "Our customers love booking via WhatsApp. No more missed calls."
+            &ldquo;Our customers love booking via WhatsApp. No more missed calls.&rdquo;
           </blockquote>
           <p className="text-white/70 text-sm">— Salon owner, Mumbai</p>
         </div>
-        <p className="text-white/50 text-xs">WhatsApp-first scheduling for India's salons</p>
+        <p className="text-white/50 text-xs">WhatsApp-first scheduling for India&apos;s salons</p>
       </div>
 
       {/* Right panel — form */}

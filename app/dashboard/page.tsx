@@ -121,7 +121,7 @@ export default async function DashboardHomePage() {
             <CardTitle className="text-sm font-medium text-muted-foreground">
               Unread alerts
             </CardTitle>
-            {unread > 0 && (
+            {(unread ?? 0) > 0 && (
               <form action={markNotificationsReadAction}>
                 <button type="submit" className="text-xs text-primary hover:underline">
                   Mark all read

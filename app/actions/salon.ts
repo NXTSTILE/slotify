@@ -494,7 +494,7 @@ export async function updateAppointmentStatusAction(formData: FormData): Promise
   }
 }
 
-export async function markNotificationsReadAction(_formData?: FormData): Promise<void> {
+export async function markNotificationsReadAction(): Promise<void> {
   try {
     const { supabase, salon } = await requireSalon();
     const { error } = await supabase

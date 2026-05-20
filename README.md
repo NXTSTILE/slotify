@@ -1,7 +1,7 @@
 
-# Slotify - WhatsApp-first Salon Scheduling SaaS
+# Nxtstile - WhatsApp-first Salon Scheduling SaaS
 
-Slotify is a multi-tenant SaaS for independent salons in India, built with a strict "WhatsApp-first" approach. Customers interact with a fully automated bot on WhatsApp to discover services, check availability, and book appointments—all without downloading an app or leaving their favorite chat interface. Owners manage bookings via a clean, Next.js web dashboard.
+Nxtstile is a multi-tenant SaaS for independent salons in India, built with a strict "WhatsApp-first" approach. Customers interact with a fully automated bot on WhatsApp to discover services, check availability, and book appointments—all without downloading an app or leaving their favorite chat interface. Owners manage bookings via a clean, Next.js web dashboard.
 
 ---
 

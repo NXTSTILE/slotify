@@ -6,8 +6,8 @@ import { AuthForm } from "./auth-form";
 import { Scissors } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Sign in — Slotify",
-  description: "Sign in to your Slotify salon dashboard.",
+  title: "Sign in — Nxtstile",
+  description: "Sign in to your Nxtstile salon dashboard.",
 };
 
 export default function LoginPage() {
@@ -17,7 +17,7 @@ export default function LoginPage() {
       <div className="hidden lg:flex lg:w-1/2 flex-col justify-between bg-gradient-to-br from-primary via-violet-500 to-purple-700 p-12 text-white">
         <div className="flex items-center gap-2 font-bold text-xl">
           <Scissors className="h-5 w-5" />
-          Slotify
+          Nxtstile
         </div>
         <div className="space-y-4">
           <blockquote className="text-2xl font-medium leading-snug">
@@ -33,7 +33,7 @@ export default function LoginPage() {
         <div className="w-full max-w-md space-y-6">
           <div className="flex items-center gap-2 font-bold text-lg text-primary lg:hidden">
             <Scissors className="h-5 w-5" />
-            Slotify
+            Nxtstile
           </div>
           <Card className="shadow-lg">
             <CardHeader>

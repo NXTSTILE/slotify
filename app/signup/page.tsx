@@ -6,7 +6,7 @@ import { SignupForm } from "./signup-form";
 import { Scissors, CheckCircle2 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Create account — Slotify",
+  title: "Create account — Nxtstile",
   description: "Register your salon and start accepting WhatsApp bookings.",
 };
 
@@ -24,7 +24,7 @@ export default function SignupPage() {
       <div className="hidden lg:flex lg:w-1/2 flex-col justify-between bg-gradient-to-br from-primary via-violet-500 to-purple-700 p-12 text-white">
         <div className="flex items-center gap-2 font-bold text-xl">
           <Scissors className="h-5 w-5" />
-          Slotify
+          Nxtstile
         </div>
         <div className="space-y-6">
           <h2 className="text-3xl font-bold leading-tight">
@@ -47,7 +47,7 @@ export default function SignupPage() {
         <div className="w-full max-w-md space-y-6">
           <div className="flex items-center gap-2 font-bold text-lg text-primary lg:hidden">
             <Scissors className="h-5 w-5" />
-            Slotify
+            Nxtstile
           </div>
           <Card className="shadow-lg">
             <CardHeader>

@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "Slotify — WhatsApp Appointment Booking for Salons",
+  title: "NxtStile — WhatsApp Appointment Booking for Salons",
   description:
     "Let customers book appointments on WhatsApp. Manage your salon from a beautiful dashboard. No app downloads. No friction.",
 };
@@ -63,7 +63,7 @@ export default function HomePage() {
       {/* Nav */}
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-sm">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-6">
-          <span className="text-lg font-bold tracking-tight text-primary">Slotify</span>
+          <span className="text-lg font-bold tracking-tight text-primary">NxtStile</span>
           <div className="flex items-center gap-2">
             <Link
               href="/login"
@@ -186,7 +186,7 @@ export default function HomePage() {
 
       {/* Footer */}
       <footer className="border-t py-6 text-center text-xs text-muted-foreground">
-        © {new Date().getFullYear()} Slotify. WhatsApp-first salon scheduling for India.
+        © {new Date().getFullYear()} NxtStile. WhatsApp-first salon scheduling for India.
       </footer>
     </div>
   );

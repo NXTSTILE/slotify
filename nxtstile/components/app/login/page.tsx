@@ -9,7 +9,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>Sign in</CardTitle>
-          <CardDescription>Slotify owner dashboard (email + password)</CardDescription>
+          <CardDescription>Nxtstile owner dashboard (email + password)</CardDescription>
         </CardHeader>
         <CardContent>
           <AuthForm action={loginAction} submitLabel="Sign in" />

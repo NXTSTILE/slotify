@@ -63,7 +63,7 @@ export function DashboardShell({
         </button>
         <div className="flex items-center gap-2 font-bold text-primary">
           <Scissors className="h-4 w-4" />
-          Slotify
+          Nxtstile
         </div>
         {unreadNotifications > 0 && (
           <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">

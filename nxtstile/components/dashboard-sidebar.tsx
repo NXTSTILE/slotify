@@ -32,7 +32,7 @@ export function DashboardSidebar({
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
       <div className="flex h-14 items-center border-b px-4 font-semibold tracking-tight">
-        Slotify
+        Nxtstile
         {unreadNotifications > 0 ? (
           <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
             {unreadNotifications > 99 ? "99+" : unreadNotifications}

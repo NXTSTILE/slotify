@@ -62,7 +62,7 @@ export function DashboardSidebar({
       {/* Logo */}
       <div className="flex h-14 items-center gap-2 border-b px-4">
         <Scissors className="h-4 w-4 text-primary" />
-        <span className="font-bold tracking-tight text-primary">Slotify</span>
+        <span className="font-bold tracking-tight text-primary">Nxtstile</span>
         {unreadNotifications > 0 ? (
           <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
             {unreadNotifications > 99 ? "99+" : unreadNotifications}
@@ -114,7 +114,7 @@ export function MobileSidebar({
       <aside className="fixed inset-y-0 left-0 z-50 flex w-72 flex-col bg-sidebar text-sidebar-foreground shadow-xl lg:hidden">
         <div className="flex h-14 items-center gap-2 border-b px-4">
           <Scissors className="h-4 w-4 text-primary" />
-          <span className="font-bold tracking-tight text-primary">Slotify</span>
+          <span className="font-bold tracking-tight text-primary">Nxtstile</span>
           {unreadNotifications > 0 ? (
             <span className="ml-auto rounded-full bg-primary px-2 py-0.5 text-xs text-primary-foreground">
               {unreadNotifications > 99 ? "99+" : unreadNotifications}

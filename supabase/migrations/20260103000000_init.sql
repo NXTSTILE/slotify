@@ -1,4 +1,4 @@
--- Slotify: enums, tables, RLS, realtime
+-- Nxtstile: enums, tables, RLS, realtime
 -- Run in Supabase SQL editor or via supabase db push
 
 -- Extensions
@@ -294,5 +294,5 @@ CREATE POLICY "notifications_update_read"
 
 -- Service role bypasses RLS for webhook/cron inserts on notifications, conversation_states, etc.
 
-COMMENT ON TABLE public.salons IS 'Slotify tenants';
+COMMENT ON TABLE public.salons IS 'Nxtstile tenants';
 COMMENT ON COLUMN public.salons.whatsapp_phone_number_id IS 'Meta WhatsApp Phone Number ID for webhook routing';

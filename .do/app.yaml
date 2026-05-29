@@ -57,3 +57,27 @@ services:
       - key: CRON_SECRET
         scope: RUN_TIME
         type: SECRET # Set value in DigitalOcean Dashboard
+
+# DigitalOcean Native Scheduler for Automated Reminders
+jobs:
+  - name: reminders-cron
+    # Runs on a strict 30-minute cron schedule inside DigitalOcean
+    schedule: "*/30 * * * *"
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    
+    # Leverages the official Docker Hub curl image (lightweight and secure)
+    image:
+      registry_type: DOCKER_HUB
+      repository: curlimages/curl
+      tag: latest
+      
+    # Trigger the cron endpoint securely over HTTPS
+    # DigitalOcean automatically injects the ${APP_URL} variable containing your public domain
+    run_command: curl -s -X GET -H "Authorization: Bearer ${CRON_SECRET}" https://${APP_URL}/api/cron/reminders
+    
+    envs:
+      - key: CRON_SECRET
+        scope: RUN_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+

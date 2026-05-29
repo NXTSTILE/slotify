@@ -143,8 +143,14 @@ For self-managed infrastructure, a multi-stage `Dockerfile` and `docker-compose.
 
 Since Vercel Crons are deprecated, use one of the following methods to trigger the WhatsApp reminders endpoint securely every 30 minutes:
 
-### Method A: Supabase `pg_cron` (Recommended)
-Since you are using Supabase, you can run a scheduled SQL query directly inside your database using the standard `pg_cron` and `pg_net` extensions. 
+### Method A: DigitalOcean App Platform Scheduled Job (Highest Recommendation)
+This is already **fully pre-configured** for you in [.do/app.yaml](file:///c:/Users/marth/Projects/salon-saas/slotify/.do/app.yaml). 
+- When deploying the application to DigitalOcean App Platform, DigitalOcean will automatically provision a native scheduled job (`reminders-cron`) that runs every 30 minutes.
+- The job executes a lightweight curl command securely.
+- **Requirement**: Simply supply your `CRON_SECRET` in the DigitalOcean dashboard when prompted during deployment. The platform dynamically routes the request using your secure internal environment configurations.
+
+### Method B: Supabase `pg_cron`
+If you are hosting your database on Supabase, you can run a scheduled SQL query directly inside your database using the standard `pg_cron` and `pg_net` extensions. 
 
 Execute the following SQL in your **Supabase SQL Editor**:
 
@@ -166,12 +172,13 @@ select cron.schedule(
 );
 ```
 
-### Method B: Local Linux Cron (Droplet only)
-If hosting on a Droplet, add a standard Linux crontab rule to trigger the local web endpoint directly:
+### Method C: Local Linux Cron (Droplet only)
+If hosting on a standalone DigitalOcean Droplet, add a standard Linux crontab rule to trigger the local web endpoint directly:
 
 1. Open crontab manager: `crontab -e`
-2. Append the following line (replace `YOUR_CRON_SECRET` and ensure the port is matching):
+2. Append the following line (replace `YOUR_CRON_SECRET` and ensure the port matches):
    ```bash
    */30 * * * * curl -s -X GET -H "Authorization: Bearer YOUR_CRON_SECRET" http://localhost:3000/api/cron/reminders
    ```
+
 

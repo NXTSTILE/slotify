@@ -1,0 +1,59 @@
+# DigitalOcean App Platform Specification
+# This file is used by DigitalOcean to provision and deploy your application.
+# Commit this file to your git repository to enable automated Git-to-App deployment.
+# Secrets are marked as type `SECRET` and should be set via the DigitalOcean Web Dashboard.
+
+name: slotify
+services:
+  - name: slotify-web
+    # Git integration settings (DigitalOcean will ask to connect your repo)
+    github:
+      repo: YOUR_GITHUB_USERNAME/slotify # Replace with your actual repository (e.g. username/repo)
+      branch: main
+      deploy_on_push: true
+    
+    # Build and Run configuration
+    build_command: npm run build
+    run_command: npm run start
+    environment_slug: node-js
+    
+    # Sizing configuration (basic-xxs is the starting tier, costing ~$5.00/month)
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    
+    # Internal HTTP routing
+    http_port: 3000
+    routes:
+      - path: /
+
+    # Secure Environment Variables Configuration
+    envs:
+      # Public environment variables (Needed at both build and run times)
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+
+      # Private server-side environment variables (Safe from client bundle exposure)
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        scope: RUN_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+
+      - key: WHATSAPP_VERIFY_TOKEN
+        scope: RUN_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+
+      - key: WHATSAPP_APP_SECRET
+        scope: RUN_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard
+
+      - key: WHATSAPP_API_VERSION
+        scope: RUN_TIME
+        value: "v19.0"
+
+      - key: CRON_SECRET
+        scope: RUN_TIME
+        type: SECRET # Set value in DigitalOcean Dashboard

@@ -3,6 +3,9 @@ const nextConfig = {
   // Strict mode for catching bugs early
   reactStrictMode: true,
 
+  // Enable standalone output for containerized/Docker production builds
+  output: "standalone",
+
   // Security headers on every response
   async headers() {
     return [

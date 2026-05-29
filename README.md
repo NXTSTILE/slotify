@@ -52,7 +52,7 @@ Keywords like `CANCEL`, `RESCHEDULE`, `HELP`, `SERVICES`, `LOCATION`, `HOURS`, `
 *   **Styling:** Tailwind CSS, Shadcn UI components
 *   **WhatsApp Integration:** Meta WhatsApp Business API (Graph API v19.0)
 *   **Date handling:** `date-fns` and `date-fns-tz` (strictly locked to `Asia/Kolkata` for India salons)
-*   **Deployment:** Vercel (for Next.js & Serverless functions/cron)
+*   **Deployment:** DigitalOcean (App Platform or VPS Droplet with Docker)
 
 ## 🚦 Getting Started
 
@@ -92,3 +92,86 @@ Keywords like `CANCEL`, `RESCHEDULE`, `HELP`, `SERVICES`, `LOCATION`, `HOURS`, `
 *   **Webhook Verification:** All incoming requests to the WhatsApp webhook verify the `X-Hub-Signature-256` header against your `WHATSAPP_APP_SECRET`.
 *   **Row Level Security (RLS):** Supabase RLS policies ensure that a logged-in salon owner can only read/write data associated with their own `salon_id`.
 *   **CSP & Headers:** `next.config.mjs` enforces strict Content-Security-Policy and framing protections.
+
+---
+
+## 🚀 DigitalOcean Deployment Guide
+
+This project is configured for a robust, secure, and production-ready deployment on **DigitalOcean**. 
+
+To protect your API keys and avoid security risks, **never commit plain-text credentials to Git**. All secret keys are marked as `SECRET` and must be entered through secure environment parameters.
+
+### Option 1: DigitalOcean App Platform (PaaS) - Recommended
+
+DigitalOcean App Platform is fully managed, offers free SSL certificates, and updates automatically when you push to GitHub.
+
+1. **Push your code** to a private GitHub repository.
+2. Go to the **DigitalOcean Web Console** -> **Apps** -> **Create App**.
+3. Select **GitHub** and connect your Nxtstile repository.
+4. The system will automatically detect the Next.js setup via the custom `.do/app.yaml` file.
+5. In the **Environment Variables** step, you will be prompted to supply values for all keys marked as `SECRET`. Retrieve these values from your local `.env` file and input them securely:
+   - `NEXT_PUBLIC_SUPABASE_URL` (Build and Run time)
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Build and Run time)
+   - `SUPABASE_SERVICE_ROLE_KEY` (Run time)
+   - `WHATSAPP_VERIFY_TOKEN` (Run time)
+   - `WHATSAPP_APP_SECRET` (Run time)
+   - `CRON_SECRET` (Run time)
+6. Choose the **Basic XXS** instance size (~$5.00/mo) and click **Create Resources**.
+7. Once deployed, DigitalOcean will provision a secure HTTPS domain for your application.
+
+### Option 2: DigitalOcean Droplet (VPS) with Docker
+
+For self-managed infrastructure, a multi-stage `Dockerfile` and `docker-compose.yml` are provided in the root directory.
+
+1. SSH into your DigitalOcean Droplet.
+2. Ensure `docker` and `docker-compose` are installed:
+   ```bash
+   sudo apt update
+   sudo apt install docker.io docker-compose -y
+   ```
+3. Clone your repository onto the Droplet.
+4. Create a `.env` file in the project root containing your secrets (similar to `.env.example`).
+5. Run the production container:
+   ```bash
+   docker-compose up -d --build
+   ```
+6. Set up **Nginx** as a reverse proxy to route traffic from port `80`/`443` to `http://localhost:3000`, and use **Certbot** for Let's Encrypt SSL certificates.
+
+---
+
+## ⏰ Scheduling Appointment Reminders (`/api/cron/reminders`)
+
+Since Vercel Crons are deprecated, use one of the following methods to trigger the WhatsApp reminders endpoint securely every 30 minutes:
+
+### Method A: Supabase `pg_cron` (Recommended)
+Since you are using Supabase, you can run a scheduled SQL query directly inside your database using the standard `pg_cron` and `pg_net` extensions. 
+
+Execute the following SQL in your **Supabase SQL Editor**:
+
+```sql
+-- Enable the required extensions
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+-- Schedule the GET request to run every 30 minutes
+select cron.schedule(
+  'send-whatsapp-reminders',
+  '*/30 * * * *',
+  $$
+  select net.http_get(
+    url := 'https://your-digitalocean-domain.com/api/cron/reminders',
+    headers := '{"Authorization": "Bearer YOUR_CRON_SECRET"}'
+  );
+  $$
+);
+```
+
+### Method B: Local Linux Cron (Droplet only)
+If hosting on a Droplet, add a standard Linux crontab rule to trigger the local web endpoint directly:
+
+1. Open crontab manager: `crontab -e`
+2. Append the following line (replace `YOUR_CRON_SECRET` and ensure the port is matching):
+   ```bash
+   */30 * * * * curl -s -X GET -H "Authorization: Bearer YOUR_CRON_SECRET" http://localhost:3000/api/cron/reminders
+   ```
+

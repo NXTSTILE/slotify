@@ -3,12 +3,12 @@
 # Commit this file to your git repository to enable automated Git-to-App deployment.
 # Secrets are marked as type `SECRET` and should be set via the DigitalOcean Web Dashboard.
 
-name: slotify
+name: nxtstile-wp
 services:
   - name: slotify-web
     # Git integration settings (DigitalOcean will ask to connect your repo)
     github:
-      repo: YOUR_GITHUB_USERNAME/slotify # Replace with your actual repository (e.g. username/repo)
+      repo: 240301370033-eng/nxtstile-wp
       branch: main
       deploy_on_push: true
     

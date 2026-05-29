@@ -29,6 +29,13 @@ yarn-error.log*
 .env
 .env*.local
 *.postman_environment.json
+/webhook-service/.env
+
+# logs and tunnels
+untun.log
+
+# scratch/dev files
+/scratch/
 
 # vercel
 .vercel

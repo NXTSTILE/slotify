@@ -1,8 +1,10 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
+import { db } from "@/lib/db";
+import { setSessionCookie, deleteSessionCookie } from "@/lib/auth";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -11,6 +13,9 @@ const loginSchema = z.object({
 
 export type AuthFormState = { error?: string };
 
+/**
+ * Log in a user by verifying their password against direct PostgreSQL database.
+ */
 export async function loginAction(
   _prev: AuthFormState | undefined,
   formData: FormData
@@ -23,11 +28,35 @@ export async function loginAction(
     return { error: "Enter a valid email and password (min 6 characters)." };
   }
 
-  const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword(parsed.data);
-  if (error) {
-    return { error: error.message };
+  const { email, password } = parsed.data;
+
+  try {
+    // 1. Fetch user from custom PostgreSQL users table
+    const result = await db.query(
+      "SELECT id, email, password_hash FROM public.users WHERE email = $1 LIMIT 1",
+      [email.toLowerCase().trim()]
+    );
+
+    const user = result.rows[0];
+    if (!user) {
+      return { error: "Invalid email or password." };
+    }
+
+    // 2. Cryptographically verify password against bcrypt hash
+    const isValid = await bcrypt.compare(password, user.password_hash);
+    if (!isValid) {
+      return { error: "Invalid email or password." };
+    }
+
+    // 3. Set the encrypted HTTP-only session cookie
+    await setSessionCookie(user.id, user.email);
+
+  } catch (err: any) {
+    console.error("[Login Action Error]", err.message);
+    return { error: "An unexpected database error occurred during login." };
   }
+
+  // Next.js redirect must be called outside try/catch blocks
   redirect("/dashboard");
 }
 
@@ -38,6 +67,9 @@ const signupSchema = z.object({
   phone: z.string().min(8),
 });
 
+/**
+ * Sign up a new user, create their corresponding salon in a transaction, and log them in.
+ */
 export async function signupAction(
   _prev: AuthFormState | undefined,
   formData: FormData
@@ -52,33 +84,65 @@ export async function signupAction(
     return { error: "Check all fields: password min 8 chars, salon name and phone required." };
   }
 
-  const supabase = await createClient();
-  const { data, error } = await supabase.auth.signUp({
-    email: parsed.data.email,
-    password: parsed.data.password,
-  });
-  if (error) {
-    return { error: error.message };
-  }
-  const user = data.user;
-  if (!user) {
-    return { error: "Could not create account. Try again." };
+  const { email, password, salonName, phone } = parsed.data;
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Establish a client for transaction management
+  const client = await db.pool.connect();
+
+  try {
+    // 1. Check if email already exists
+    const checkUser = await client.query(
+      "SELECT id FROM public.users WHERE email = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (checkUser.rows.length > 0) {
+      client.release();
+      return { error: "An account with this email already exists." };
+    }
+
+    // 2. Hash the password securely with bcrypt
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // 3. Execute Transaction
+    await client.query("BEGIN");
+
+    // Insert new user
+    const userInsert = await client.query(
+      "INSERT INTO public.users (email, password_hash) VALUES ($1, $2) RETURNING id",
+      [normalizedEmail, passwordHash]
+    );
+    const userId = userInsert.rows[0].id;
+
+    // Insert corresponding salon
+    await client.query(
+      "INSERT INTO public.salons (owner_id, name, phone) VALUES ($1, $2, $3)",
+      [userId, salonName, phone]
+    );
+
+    await client.query("COMMIT");
+    client.release();
+
+    // 4. Set session cookie
+    await setSessionCookie(userId, normalizedEmail);
+
+  } catch (err: any) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    client.release();
+    console.error("[Signup Action Error]", err.message);
+    return { error: "Failed to create user account. Please try again." };
   }
 
-  const { error: salonErr } = await supabase.from("salons").insert({
-    owner_id: user.id,
-    name: parsed.data.salonName,
-    phone: parsed.data.phone,
-  });
-  if (salonErr) {
-    return { error: salonErr.message };
-  }
-
+  // Redirect to dashboard
   redirect("/dashboard");
 }
 
+/**
+ * Destroy user session and redirect to login screen.
+ */
 export async function signOutAction() {
-  const supabase = await createClient();
-  await supabase.auth.signOut();
+  await deleteSessionCookie();
   redirect("/login");
 }

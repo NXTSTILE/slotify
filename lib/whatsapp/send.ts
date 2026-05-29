@@ -1,6 +1,3 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/types/database";
-
 const DEFAULT_VERSION = "v19.0";
 
 type InteractiveRow = { id: string; title: string; description?: string };
@@ -155,26 +152,3 @@ export async function sendWhatsAppTemplate(
   });
 }
 
-/** Loads salon WhatsApp credentials from DB — use service role on server. */
-export async function sendForSalon(
-  admin: SupabaseClient<Database>,
-  salonId: string,
-  send: (phoneNumberId: string, token: string) => Promise<{ ok: boolean; error?: string }>
-): Promise<{ ok: boolean; error?: string }> {
-  const { data: salon, error } = await admin
-    .from("salons")
-    .select("whatsapp_phone_number_id, whatsapp_access_token")
-    .eq("id", salonId)
-    .maybeSingle();
-
-  if (error) {
-    console.error("[WhatsApp] Salon fetch error:", error.message);
-    return { ok: false, error: error.message };
-  }
-  const pid = salon?.whatsapp_phone_number_id;
-  const token = salon?.whatsapp_access_token;
-  if (!pid || !token) {
-    return { ok: false, error: "Salon WhatsApp not configured" };
-  }
-  return send(pid, token);
-}

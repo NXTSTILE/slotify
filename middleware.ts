@@ -1,54 +1,38 @@
-import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import type { Database } from "@/lib/types/database";
+import { decrypt } from "@/lib/auth";
 
+/**
+ * Global application middleware to guard routes and protect dashboard actions.
+ * Runs in the ultra-fast Next.js Edge Runtime.
+ */
 export async function middleware(request: NextRequest) {
-  let response = NextResponse.next({ request });
+  const { pathname } = request.nextUrl;
+  
+  // 1. Retrieve the session cookie
+  const sessionCookie = request.cookies.get("session")?.value;
+  
+  // 2. Cryptographically decrypt and verify the JWT
+  const session = sessionCookie ? await decrypt(sessionCookie) : null;
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !supabaseKey) {
-    return response;
-  }
+  // 3. Route guarding logic
+  const isDashboardRoute = pathname.startsWith("/dashboard");
+  const isSetupRoute = pathname.startsWith("/setup");
+  const isAuthRoute = pathname === "/login" || pathname === "/signup";
 
-  const supabase = createServerClient<Database>(supabaseUrl, supabaseKey, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
-      },
-      setAll(cookiesToSet) {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          response.cookies.set(name, value, options)
-        );
-      },
-    },
-  });
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (request.nextUrl.pathname.startsWith("/dashboard") && !user) {
+  // Redirect unauthenticated users trying to access protected routes
+  if ((isDashboardRoute || isSetupRoute) && !session) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (request.nextUrl.pathname === "/login" && user) {
+  // Redirect already authenticated users away from auth gates (login/signup)
+  if (isAuthRoute && session) {
     return NextResponse.redirect(new URL("/dashboard", request.url));
   }
 
-  if (request.nextUrl.pathname === "/signup" && user) {
-    return NextResponse.redirect(new URL("/dashboard", request.url));
-  }
-
-  if (request.nextUrl.pathname.startsWith("/setup") && !user) {
-    return NextResponse.redirect(new URL("/login", request.url));
-  }
-
-  return response;
+  return NextResponse.next();
 }
 
 export const config = {
+  // Matches all dashboard, authentication, and onboarding routes
   matcher: ["/dashboard/:path*", "/login", "/signup", "/setup"],
 };

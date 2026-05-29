@@ -1,10 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
 import { Menu, Scissors } from "lucide-react";
-import { createClient } from "@/lib/supabase/client";
 import { MobileSidebar } from "@/components/dashboard-sidebar";
 
 export function DashboardShell({
@@ -20,35 +18,16 @@ export function DashboardShell({
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
-    const supabase = createClient();
-    const channel = supabase
-      .channel(`dash-${salonId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "appointments",
-          filter: `salon_id=eq.${salonId}`,
-        },
-        () => router.refresh()
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "notifications",
-          filter: `salon_id=eq.${salonId}`,
-        },
-        () => router.refresh()
-      )
-      .subscribe();
+    // Standard direct database setups don't have instant WebSocket publications by default.
+    // Setting up a robust 30-second polling interval keeps the dashboard fresh.
+    const interval = setInterval(() => {
+      router.refresh();
+    }, 30000);
 
     return () => {
-      void supabase.removeChannel(channel);
+      clearInterval(interval);
     };
-  }, [salonId, router]);
+  }, [router]);
 
   return (
     <>

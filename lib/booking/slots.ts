@@ -1,7 +1,6 @@
 import { addMinutes, format, isBefore, parseISO, startOfDay } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
-import type { SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/types/database";
+import { db } from "@/lib/db";
 import {
   APPOINTMENT_BUFFER_MINUTES,
   SALON_TIMEZONE,
@@ -23,9 +22,9 @@ export type WindowResult =
 
 /** 
  * NEW LOGIC: Calculates availability for Morning and Evening sessions.
+ * Queries DigitalOcean PostgreSQL directly.
  */
 export async function getAvailableWindows(
-  admin: SupabaseClient<Database>,
   salonId: string,
   selectedDayUtc: Date,
   totalDurationMinutes: number,
@@ -43,19 +42,19 @@ export async function getAvailableWindows(
     return { ok: false, reason: `Bookings must be made at least ${SAME_DAY_MIN_LEAD_HOURS} hours in advance.` };
   }
 
-  // 2. Load Salon Working Hours & Holidays
+  // 2. Load Salon Working Hours
   const dayOfWeek = zonedDay.getDay();
-  const { data: wh } = await admin
-    .from("working_hours")
-    .select("open_time, close_time, is_closed")
-    .eq("salon_id", salonId)
-    .eq("day_of_week", dayOfWeek)
-    .maybeSingle();
+  
+  const whRes = await db.query(
+    "SELECT open_time, close_time, is_closed FROM public.working_hours WHERE salon_id = $1 AND day_of_week = $2 LIMIT 1",
+    [salonId, dayOfWeek]
+  );
+  const wh = whRes.rows[0];
 
   if (!wh || wh.is_closed) return { ok: false, reason: "The salon is closed on this day." };
 
-  const openUtc = combineKolkataDateAndTime(dayStartUtc, wh.open_time!);
-  const closeUtc = combineKolkataDateAndTime(dayStartUtc, wh.close_time!);
+  const openUtc = combineKolkataDateAndTime(dayStartUtc, wh.open_time);
+  const closeUtc = combineKolkataDateAndTime(dayStartUtc, wh.close_time);
 
   // 3. Define Windows (Morning vs Evening)
   // Split point is 1:00 PM (13:00)
@@ -66,16 +65,16 @@ export async function getAvailableWindows(
     { name: "Evening", start: splitTimeUtc, end: closeUtc }
   ];
 
-  // 4. Fetch Busy Times (Appointments)
-  const { data: busyRows } = await admin
-    .from("appointments")
-    .select("start_time, end_time")
-    .eq("salon_id", salonId)
-    .in("status", ["pending", "confirmed"])
-    .gte("start_time", dayStartUtc.toISOString())
-    .lt("start_time", dayEndUtc.toISOString());
+  // 4. Fetch Busy Times (Appointments) from PostgreSQL
+  const busyRes = await db.query(
+    `SELECT start_time, end_time FROM public.appointments 
+     WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+     AND start_time >= $2 AND start_time < $3`,
+    [salonId, dayStartUtc.toISOString(), dayEndUtc.toISOString()]
+  );
+  const busyRows = busyRes.rows;
 
-  const busy = (busyRows ?? []).map(r => ({
+  const busy = busyRows.map(r => ({
     start: new Date(r.start_time),
     end: new Date(r.end_time)
   }));

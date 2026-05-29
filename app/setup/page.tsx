@@ -1,21 +1,24 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 import { createSalonSetupAction } from "@/app/actions/setup";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SetupForm } from "./setup-form";
 
 export default async function SetupPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  // 1. Fetch active session context
+  const session = await getSession();
+  if (!session) {
     redirect("/login");
   }
 
-  const { salon } = await getSalonForUser(supabase, user.id);
+  // 2. Redirect to dashboard if salon already exists
+  const salonRes = await db.query(
+    "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  const salon = salonRes.rows[0];
   if (salon) {
     redirect("/dashboard");
   }

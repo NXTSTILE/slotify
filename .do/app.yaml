@@ -28,20 +28,17 @@ services:
 
     # Secure Environment Variables Configuration
     envs:
-      # Public environment variables (Needed at both build and run times)
-      - key: NEXT_PUBLIC_SUPABASE_URL
+      # Direct PostgreSQL connection URL (Needed at both build and run times)
+      - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
         type: SECRET # Set value in DigitalOcean Dashboard
 
-      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
-        scope: RUN_AND_BUILD_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
-      # Private server-side environment variables (Safe from client bundle exposure)
-      - key: SUPABASE_SERVICE_ROLE_KEY
+      # Cryptographic JWT signing secret (Run time only)
+      - key: JWT_SECRET
         scope: RUN_TIME
         type: SECRET # Set value in DigitalOcean Dashboard
 
+      # Meta WhatsApp API configurations
       - key: WHATSAPP_VERIFY_TOKEN
         scope: RUN_TIME
         type: SECRET # Set value in DigitalOcean Dashboard

@@ -19,12 +19,10 @@ COPY . .
 # We disable it during build and runtime to enhance performance and privacy.
 ENV NEXT_TELEMETRY_DISABLED 1
 
-# Note: If public keys must be baked at build time, they must be supplied here.
-# App Platform and Docker Compose handle this by injecting variables.
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+# Note: If database connection is needed at build time, supply it here.
+ARG DATABASE_URL
+ENV DATABASE_URL=$DATABASE_URL
+
 
 RUN npm run build
 

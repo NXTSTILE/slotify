@@ -1,59 +1,71 @@
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
+import { redirect } from "next/navigation";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 import { SALON_TIMEZONE } from "@/lib/constants";
 import { AppointmentsView } from "./appointments-view";
 
 export default async function AppointmentsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
-    return null;
+  // 1. Fetch user session
+  const session = await getSession();
+  if (!session) {
+    redirect("/login");
   }
-  const { salon } = await getSalonForUser(supabase, user.id);
+
+  // 2. Load salon details
+  const salonRes = await db.query(
+    "SELECT id, name FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  const salon = salonRes.rows[0];
   if (!salon) {
-    return null;
+    redirect("/setup");
   }
 
-  const { data: aptRows, error: aptErr } = await supabase
-    .from("appointments")
-    .select("id, start_time, end_time, status, total_price, total_duration_minutes, customer_id")
-    .eq("salon_id", salon.id)
-    .order("start_time", { ascending: true });
+  // 3. Load all appointments for the salon
+  const aptRes = await db.query(
+    `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id 
+     FROM public.appointments 
+     WHERE salon_id = $1 
+     ORDER BY start_time ASC`,
+    [salon.id]
+  );
+  const aptRows = aptRes.rows;
 
-  if (aptErr) {
-    console.error(aptErr.message);
+  // 4. Load customers in bulk using SQL arrays
+  const ids = Array.from(new Set(aptRows.map((a) => a.customer_id)));
+  let custs: any[] = [];
+  if (ids.length > 0) {
+    const custRes = await db.query(
+      "SELECT id, name, phone FROM public.customers WHERE id = ANY($1::uuid[])",
+      [ids]
+    );
+    custs = custRes.rows;
   }
+  const custMap = new Map(custs.map((c) => [c.id, c]));
 
-  const ids = Array.from(new Set((aptRows ?? []).map((a) => a.customer_id)));
-  const { data: custs } =
-    ids.length > 0
-      ? await supabase.from("customers").select("id, name, phone").in("id", ids)
-      : { data: [] as { id: string; name: string; phone: string }[] };
-  const custMap = new Map((custs ?? []).map((c) => [c.id, c]));
-
-  const aptIdList = (aptRows ?? []).map((a) => a.id);
-  const { data: lines } =
-    aptIdList.length > 0
-      ? await supabase
-          .from("appointment_services")
-          .select("appointment_id, services(name)")
-          .in("appointment_id", aptIdList)
-      : { data: [] as { appointment_id: string; services: unknown }[] };
+  // 5. Query appointment service relations using a highly efficient standard SQL JOIN
+  const aptIdList = aptRows.map((a) => a.id);
+  let lines: any[] = [];
+  if (aptIdList.length > 0) {
+    const linesRes = await db.query(
+      `SELECT aps.appointment_id, s.name 
+       FROM public.appointment_services aps 
+       JOIN public.services s ON aps.service_id = s.id 
+       WHERE aps.appointment_id = ANY($1::uuid[])`,
+      [aptIdList]
+    );
+    lines = linesRes.rows;
+  }
 
   const servicesByApt = new Map<string, string[]>();
-  for (const l of lines ?? []) {
-    const n =
-      l.services && typeof l.services === "object" && "name" in l.services
-        ? String((l.services as { name: string }).name)
-        : "Service";
+  for (const l of lines) {
     const list = servicesByApt.get(l.appointment_id) ?? [];
-    list.push(n);
+    list.push(l.name);
     servicesByApt.set(l.appointment_id, list);
   }
 
-  const initial = (aptRows ?? []).map((a) => ({
+  // 6. Format initial appointments array structure for week-day rendering
+  const initial = aptRows.map((a) => ({
     id: a.id,
     start_time: a.start_time,
     end_time: a.end_time,

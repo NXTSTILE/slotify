@@ -1,10 +1,9 @@
 import { addMinutes, format, parseISO } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { APPOINTMENT_BUFFER_MINUTES, SALON_TIMEZONE } from "@/lib/constants";
-import type { ConversationState, Database, Json } from "@/lib/types/database";
 import { normalizeCustomerPhone } from "@/lib/booking/phone";
+import { db } from "@/lib/db";
 import {
   getAvailableWindows,
   parseDdMmYyyyKolkata,
@@ -43,59 +42,55 @@ export type IncomingParsed =
   | { kind: "text"; body: string }
   | { kind: "interactive"; id: string; title?: string };
 
-function parseContext(raw: Json): Ctx {
-  const o =
-    raw && typeof raw === "object" && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
-      : {};
+function parseContext(raw: any): Ctx {
+  const o = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const parsed = CtxSchema.safeParse(o);
   return parsed.success ? parsed.data : {};
 }
 
-function toJson(ctx: Ctx): Json {
-  return ctx as Json;
-}
-
+/**
+ * Creates or updates the conversation state for a specific customer in the salon.
+ */
 async function ensureConversationRow(
-  admin: SupabaseClient<Database>,
   salonId: string,
   phone: string,
-  state: ConversationState,
+  state: string,
   ctx: Ctx
 ): Promise<void> {
-  const { error } = await admin.from("conversation_states").upsert(
-    {
-      salon_id: salonId,
-      customer_phone: phone,
-      state,
-      context: toJson(ctx),
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "salon_id,customer_phone" }
-  );
-  if (error) {
-    console.error("[conversation] upsert state", error.message);
+  try {
+    await db.query(
+      `INSERT INTO public.conversation_states (salon_id, customer_phone, state, context, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (salon_id, customer_phone)
+       DO UPDATE SET state = $3, context = $4, updated_at = NOW()`,
+      [salonId, phone, state, JSON.stringify(ctx)]
+    );
+  } catch (err: any) {
+    console.error("[conversation] upsert state error", err.message);
   }
 }
 
+/**
+ * Retrieves the active state and context for a customer's WhatsApp conversation.
+ */
 async function getState(
-  admin: SupabaseClient<Database>,
   salonId: string,
   phone: string
-): Promise<{ state: ConversationState; ctx: Ctx }> {
-  const { data, error } = await admin
-    .from("conversation_states")
-    .select("state, context")
-    .eq("salon_id", salonId)
-    .eq("customer_phone", phone)
-    .maybeSingle();
-  if (error) {
-    console.error("[conversation] get state", error.message);
-  }
-  if (!data) {
+): Promise<{ state: string; ctx: Ctx }> {
+  try {
+    const res = await db.query(
+      "SELECT state, context FROM public.conversation_states WHERE salon_id = $1 AND customer_phone = $2 LIMIT 1",
+      [salonId, phone]
+    );
+    if (res.rows.length === 0) {
+      return { state: "IDLE", ctx: {} };
+    }
+    const row = res.rows[0];
+    return { state: row.state, ctx: parseContext(row.context) };
+  } catch (err: any) {
+    console.error("[conversation] get state error", err.message);
     return { state: "IDLE", ctx: {} };
   }
-  return { state: data.state, ctx: parseContext(data.context) };
 }
 
 function tokenizeKeywords(text: string): string | null {
@@ -127,39 +122,43 @@ async function sendAuth(
   await fn(pid, token);
 }
 
+/**
+ * Locates the active confirmed or pending appointment for a customer.
+ */
 async function findActiveAppointment(
-  admin: SupabaseClient<Database>,
   salonId: string,
   customerPhone: string
 ) {
-  const { data: cust } = await admin
-    .from("customers")
-    .select("id")
-    .eq("salon_id", salonId)
-    .eq("phone", customerPhone)
-    .maybeSingle();
-  if (!cust) return null;
+  try {
+    const custRes = await db.query(
+      "SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1",
+      [salonId, customerPhone]
+    );
+    if (custRes.rows.length === 0) return null;
+    const customerId = custRes.rows[0].id;
 
-  const { data: apt } = await admin
-    .from("appointments")
-    .select("id, start_time, status, total_price, total_duration_minutes")
-    .eq("salon_id", salonId)
-    .eq("customer_id", cust.id)
-    .in("status", ["pending", "confirmed"])
-    .order("start_time", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return apt;
+    const aptRes = await db.query(
+      `SELECT id, start_time, status, total_price, total_duration_minutes 
+       FROM public.appointments 
+       WHERE salon_id = $1 AND customer_id = $2 AND status IN ('pending', 'confirmed') 
+       ORDER BY start_time DESC LIMIT 1`,
+      [salonId, customerId]
+    );
+    return aptRes.rows[0] || null;
+  } catch (err: any) {
+    console.error("[conversation] find active appointment error", err.message);
+    return null;
+  }
 }
 
 function formatBookingDetail(
   salonName: string,
-  startIso: string,
+  startIso: string | Date,
   durationMin: number,
   price: number,
   status: string
 ): string {
-  const st = parseISO(startIso);
+  const st = typeof startIso === "string" ? parseISO(startIso) : startIso;
   const local = toZonedTime(st, SALON_TIMEZONE);
   const when = format(local, "EEE, dd MMM yyyy 'at' hh:mm a");
   return (
@@ -171,26 +170,38 @@ function formatBookingDetail(
   );
 }
 
+/**
+ * Cancels an appointment and pushes a cancellation notification.
+ */
 async function cancelAppointmentById(
-  admin: SupabaseClient<Database>,
   salonId: string,
   appointmentId: string,
   customerPhone: string
 ) {
-  await admin
-    .from("appointments")
-    .update({ status: "cancelled" })
-    .eq("id", appointmentId)
-    .eq("salon_id", salonId);
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    
+    await client.query(
+      "UPDATE public.appointments SET status = 'cancelled' WHERE id = $1 AND salon_id = $2",
+      [appointmentId, salonId]
+    );
 
-  await admin.from("notifications").insert({
-    salon_id: salonId,
-    type: "cancellation",
-    appointment_id: appointmentId,
-    is_read: false,
-  });
+    await client.query(
+      "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'cancellation', $2, false)",
+      [salonId, appointmentId]
+    );
 
-  await sendAuth(await loadSalon(admin, salonId), (pid, tok) =>
+    await client.query("COMMIT");
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    console.error("[conversation] cancel appointment error", err.message);
+  } finally {
+    client.release();
+  }
+
+  const salon = await loadSalon(salonId);
+  await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
       body: "Your appointment has been cancelled. Send BOOK when you're ready to book again.",
@@ -198,36 +209,34 @@ async function cancelAppointmentById(
   );
 }
 
-async function loadSalon(
-  admin: SupabaseClient<Database>,
-  salonId: string
-): Promise<SalonRow> {
-  const { data, error } = await admin
-    .from("salons")
-    .select(
-      "id, name, phone, address, city, cancellation_policy, whatsapp_phone_number_id, whatsapp_access_token"
-    )
-    .eq("id", salonId)
-    .single();
-  if (error || !data) {
-    throw new Error(error?.message ?? "Salon not found");
+/**
+ * Loads metadata configuration details for a salon.
+ */
+async function loadSalon(salonId: string): Promise<SalonRow> {
+  const res = await db.query(
+    `SELECT id, name, phone, address, city, cancellation_policy, whatsapp_phone_number_id, whatsapp_access_token 
+     FROM public.salons WHERE id = $1 LIMIT 1`,
+    [salonId]
+  );
+  if (res.rows.length === 0) {
+    throw new Error("Salon not found");
   }
-  return data as SalonRow;
+  return res.rows[0] as SalonRow;
 }
 
+/**
+ * The core conversation bot routing controller state machine.
+ */
 export async function handleConversationMessage(
-  admin: SupabaseClient<Database>,
   salonId: string,
   customerPhoneRaw: string,
   incoming: IncomingParsed
 ): Promise<void> {
   const customerPhone = normalizeCustomerPhone(customerPhoneRaw);
-  const salon = await loadSalon(admin, salonId);
+  const salon = await loadSalon(salonId);
 
   const userText = incoming.kind === "text" ? incoming.body.trim() : "";
-
-  const { state, ctx } = await getState(admin, salonId, customerPhone);
-
+  const { state, ctx } = await getState(salonId, customerPhone);
   const kw = tokenizeKeywords(userText);
 
   if (kw === "HELP") {
@@ -250,7 +259,7 @@ export async function handleConversationMessage(
   }
 
   if (kw === "SERVICES") {
-    await sendServiceCatalog(admin, salon, customerPhone);
+    await sendServiceCatalog(salon, customerPhone);
     return;
   }
   if (kw === "LOCATION") {
@@ -274,12 +283,12 @@ export async function handleConversationMessage(
     return;
   }
   if (kw === "HOURS") {
-    await sendWorkingHoursSummary(admin, salon, customerPhone);
+    await sendWorkingHoursSummary(salon, customerPhone);
     return;
   }
 
   if (kw === "CANCEL") {
-    const apt = await findActiveAppointment(admin, salonId, customerPhone);
+    const apt = await findActiveAppointment(salonId, customerPhone);
     if (!apt) {
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
@@ -289,7 +298,7 @@ export async function handleConversationMessage(
       );
       return;
     }
-    await ensureConversationRow(admin, salonId, customerPhone, state, {
+    await ensureConversationRow(salonId, customerPhone, state, {
       ...ctx,
       pendingCancelAppointmentId: apt.id,
     });
@@ -307,7 +316,7 @@ export async function handleConversationMessage(
   }
 
   if (kw === "RESCHEDULE") {
-    const apt = await findActiveAppointment(admin, salonId, customerPhone);
+    const apt = await findActiveAppointment(salonId, customerPhone);
     if (!apt) {
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
@@ -317,34 +326,42 @@ export async function handleConversationMessage(
       );
       return;
     }
-    const { data: lines } = await admin
-      .from("appointment_services")
-      .select("service_id")
-      .eq("appointment_id", apt.id);
-    const ids = (lines ?? []).map((l) => l.service_id);
 
-    await admin
-      .from("appointments")
-      .update({ status: "cancelled" })
-      .eq("id", apt.id)
-      .eq("salon_id", salonId);
+    // Retrieve active appointment service relations
+    const linesRes = await db.query(
+      "SELECT service_id FROM public.appointment_services WHERE appointment_id = $1",
+      [apt.id]
+    );
+    const ids = linesRes.rows.map((l) => l.service_id);
 
-    await admin.from("notifications").insert({
-      salon_id: salonId,
-      type: "reschedule",
-      appointment_id: apt.id,
-      is_read: false,
-    });
+    const client = await db.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "UPDATE public.appointments SET status = 'cancelled' WHERE id = $1 AND salon_id = $2",
+        [apt.id, salonId]
+      );
+      await client.query(
+        "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'reschedule', $2, false)",
+        [salonId, apt.id]
+      );
+      await client.query("COMMIT");
+    } catch (e: any) {
+      await client.query("ROLLBACK");
+      console.error("[conversation] reschedule transaction failed", e.message);
+    } finally {
+      client.release();
+    }
 
     if (!ids.length) {
-      await ensureConversationRow(admin, salonId, customerPhone, "SELECTING_SERVICES", {});
+      await ensureConversationRow(salonId, customerPhone, "SELECTING_SERVICES", {});
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
           toE164: customerPhone,
           body: "Previous booking cleared. Let's pick your services again.",
         })
       );
-      await startIdleFlow(admin, salon, customerPhone);
+      await startIdleFlow(salon, customerPhone);
       return;
     }
 
@@ -355,12 +372,11 @@ export async function handleConversationMessage(
       selectedDayIso: undefined,
       slotStarts: undefined,
     };
-    await ensureConversationRow(admin, salonId, customerPhone, "SELECTING_DATE", nextCtx);
+    await ensureConversationRow(salonId, customerPhone, "SELECTING_DATE", nextCtx);
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body:
-          "Previous booking cancelled for reschedule. Please send your preferred date (DD/MM/YYYY), or say today / tomorrow.",
+        body: "Previous booking cancelled for reschedule. Please send your preferred date (DD/MM/YYYY), or say today / tomorrow.",
       })
     );
     return;
@@ -369,12 +385,12 @@ export async function handleConversationMessage(
   if (ctx.pendingCancelAppointmentId && incoming.kind === "interactive") {
     if (incoming.id === "cn_yes") {
       const id = ctx.pendingCancelAppointmentId;
-      await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
-      await cancelAppointmentById(admin, salonId, id, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
+      await cancelAppointmentById(salonId, id, customerPhone);
       return;
     }
     if (incoming.id === "cn_no") {
-      await ensureConversationRow(admin, salonId, customerPhone, state, {
+      await ensureConversationRow(salonId, customerPhone, state, {
         ...ctx,
         pendingCancelAppointmentId: undefined,
       });
@@ -389,12 +405,12 @@ export async function handleConversationMessage(
     const t = userText.toUpperCase();
     if (t === "YES" || t === "Y" || t === "CONFIRM") {
       const id = ctx.pendingCancelAppointmentId;
-      await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
-      await cancelAppointmentById(admin, salonId, id, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
+      await cancelAppointmentById(salonId, id, customerPhone);
       return;
     }
     if (t === "NO" || t === "N") {
-      await ensureConversationRow(admin, salonId, customerPhone, state, {
+      await ensureConversationRow(salonId, customerPhone, state, {
         ...ctx,
         pendingCancelAppointmentId: undefined,
       });
@@ -406,7 +422,7 @@ export async function handleConversationMessage(
   }
 
   if (state === "BOOKED") {
-    const apt = await findActiveAppointment(admin, salonId, customerPhone);
+    const apt = await findActiveAppointment(salonId, customerPhone);
     if (apt) {
       const detail = formatBookingDetail(
         salon.name,
@@ -422,14 +438,14 @@ export async function handleConversationMessage(
         })
       );
     } else {
-      await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
           toE164: customerPhone,
           body: `Hi! Welcome to ${salon.name}. Let's pick your services — sending the menu now.`,
         })
       );
-      await startIdleFlow(admin, salon, customerPhone);
+      await startIdleFlow(salon, customerPhone);
     }
     return;
   }
@@ -441,43 +457,35 @@ export async function handleConversationMessage(
 
   switch (state) {
     case "IDLE":
-      await startIdleFlow(admin, salon, customerPhone);
+      await startIdleFlow(salon, customerPhone);
       return;
     case "SELECTING_SERVICES":
-      await handleSelectingServices(admin, salon, customerPhone, servicesInput, ctx);
+      await handleSelectingServices(salon, customerPhone, servicesInput, ctx);
       return;
     case "SELECTING_DATE":
-      await handleSelectingDate(admin, salon, customerPhone, userText, ctx);
+      await handleSelectingDate(salon, customerPhone, userText, ctx);
       return;
     case "SELECTING_SESSION":
-      await handleSelectingSession(admin, salon, customerPhone, userText, incoming, ctx);
+      await handleSelectingSession(salon, customerPhone, userText, incoming, ctx);
       return;
     case "CONFIRMING_NAME":
-      await handleConfirmingName(admin, salon, customerPhone, userText, ctx);
+      await handleConfirmingName(salon, customerPhone, userText, ctx);
       return;
     default:
-      await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
-      await startIdleFlow(admin, salon, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
+      await startIdleFlow(salon, customerPhone);
   }
 }
 
-async function sendServiceCatalog(
-  admin: SupabaseClient<Database>,
-  salon: SalonRow,
-  to: string
-) {
-  const { data: services } = await admin
-    .from("services")
-    .select("id, name, duration_minutes, price")
-    .eq("salon_id", salon.id)
-    .eq("is_active", true)
-    .order("display_order", { ascending: true });
-
-  const lines =
-    services?.map(
-      (s) =>
-        `• ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
-    ) ?? [];
+async function sendServiceCatalog(salon: SalonRow, to: string) {
+  const res = await db.query(
+    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+    [salon.id]
+  );
+  
+  const lines = res.rows.map(
+    (s) => `• ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
+  );
 
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
@@ -487,46 +495,36 @@ async function sendServiceCatalog(
   );
 }
 
-async function sendWorkingHoursSummary(
-  admin: SupabaseClient<Database>,
-  salon: SalonRow,
-  to: string
-) {
-  const { data: rows } = await admin
-    .from("working_hours")
-    .select("day_of_week, open_time, close_time, is_closed")
-    .eq("salon_id", salon.id)
-    .order("day_of_week", { ascending: true });
+async function sendWorkingHoursSummary(salon: SalonRow, to: string) {
+  const res = await db.query(
+    "SELECT day_of_week, open_time, close_time, is_closed FROM public.working_hours WHERE salon_id = $1 ORDER BY day_of_week ASC",
+    [salon.id]
+  );
 
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const text =
-    rows
-      ?.map((r) => {
+    res.rows
+      .map((r) => {
         if (r.is_closed || !r.open_time || !r.close_time) {
           return `${names[r.day_of_week]}: Closed`;
         }
         return `${names[r.day_of_week]}: ${r.open_time.slice(0, 5)}–${r.close_time.slice(0, 5)}`;
       })
-      .join("\n") ?? "Hours not configured.";
+      .join("\n") || "Hours not configured.";
 
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, { toE164: to, body: `*Hours (${SALON_TIMEZONE})*\n${text}` })
   );
 }
 
-async function startIdleFlow(
-  admin: SupabaseClient<Database>,
-  salon: SalonRow,
-  customerPhone: string
-) {
-  const { data: services } = await admin
-    .from("services")
-    .select("id, name, duration_minutes, price")
-    .eq("salon_id", salon.id)
-    .eq("is_active", true)
-    .order("display_order", { ascending: true });
+async function startIdleFlow(salon: SalonRow, customerPhone: string) {
+  const res = await db.query(
+    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+    [salon.id]
+  );
+  const services = res.rows;
 
-  if (!services?.length) {
+  if (!services.length) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
@@ -536,7 +534,7 @@ async function startIdleFlow(
     return;
   }
 
-  await ensureConversationRow(admin, salon.id, customerPhone, "SELECTING_SERVICES", {
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
     serviceIds: [],
   });
 
@@ -552,10 +550,7 @@ async function startIdleFlow(
             rows: services.map((s, i) => ({
               id: `svc_${s.id}`,
               title: `${i + 1}. ${s.name}`.slice(0, 24),
-              description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(
-                0,
-                72
-              ),
+              description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(0, 72),
             })),
           },
         ],
@@ -590,21 +585,19 @@ async function startIdleFlow(
 }
 
 async function handleSelectingServices(
-  admin: SupabaseClient<Database>,
   salon: SalonRow,
   customerPhone: string,
   body: string,
   ctx: Ctx
 ) {
-  const { data: services } = await admin
-    .from("services")
-    .select("id, name, duration_minutes, price")
-    .eq("salon_id", salon.id)
-    .eq("is_active", true)
-    .order("display_order", { ascending: true });
+  const res = await db.query(
+    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+    [salon.id]
+  );
+  const services = res.rows;
 
-  if (!services?.length) {
-    await ensureConversationRow(admin, salon.id, customerPhone, "IDLE", {});
+  if (!services.length) {
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
     return;
   }
 
@@ -620,7 +613,7 @@ async function handleSelectingServices(
     for (const p of parts) {
       const n = Number(p);
       if (!Number.isFinite(n) || n < 1 || n > services.length) continue;
-      selected.add(services[n - 1]!.id);
+      selected.add(services[n - 1].id);
     }
   }
 
@@ -642,15 +635,14 @@ async function handleSelectingServices(
     list.map((s) => `• ${s.name}`).join("\n") +
     `\n\nTotal: ${totalDur} min · ₹${totalPrice.toFixed(2)}`;
 
-  await ensureConversationRow(admin, salon.id, customerPhone, "SELECTING_DATE", {
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {
     serviceIds: Array.from(selected),
   });
 
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body:
-        `${summary}\n\nSend your preferred date as DD/MM/YYYY, or say *today* or *tomorrow*.`,
+      body: `${summary}\n\nSend your preferred date as DD/MM/YYYY, or say *today* or *tomorrow*.`,
     })
   );
 }
@@ -670,7 +662,6 @@ function resolveDateText(body: string): Date | null {
 }
 
 async function handleSelectingDate(
-  admin: SupabaseClient<Database>,
   salon: SalonRow,
   customerPhone: string,
   body: string,
@@ -678,20 +669,21 @@ async function handleSelectingDate(
 ) {
   const ids = ctx.serviceIds ?? [];
   if (ids.length === 0) {
-    await ensureConversationRow(admin, salon.id, customerPhone, "IDLE", {});
-    await startIdleFlow(admin, salon, customerPhone);
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await startIdleFlow(salon, customerPhone);
     return;
   }
 
-  const { data: services } = await admin
-    .from("services")
-    .select("duration_minutes, price")
-    .in("id", ids);
+  // Load selected services directly via SQL parameterized array mapping
+  const res = await db.query(
+    "SELECT duration_minutes, price FROM public.services WHERE id = ANY($1::uuid[])",
+    [ids]
+  );
+  const services = res.rows;
 
-  const totalDur =
-    services?.reduce((a, s) => a + s.duration_minutes, 0) ?? 0;
-
+  const totalDur = services.reduce((a, s) => a + s.duration_minutes, 0);
   const day = resolveDateText(body);
+
   if (!day) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
@@ -702,7 +694,7 @@ async function handleSelectingDate(
     return;
   }
 
-  const windowRes = await getAvailableWindows(admin, salon.id, day, totalDur);
+  const windowRes = await getAvailableWindows(salon.id, day, totalDur);
   if (!windowRes.ok) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
@@ -710,7 +702,7 @@ async function handleSelectingDate(
     return;
   }
 
-  const availableWindows = windowRes.windows.filter(w => w.status === "AVAILABLE");
+  const availableWindows = windowRes.windows.filter((w) => w.status === "AVAILABLE");
 
   if (availableWindows.length === 0) {
     await sendAuth(salon, (pid, tok) =>
@@ -722,7 +714,7 @@ async function handleSelectingDate(
     return;
   }
 
-  await ensureConversationRow(admin, salon.id, customerPhone, "SELECTING_SESSION", {
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
     ...ctx,
     selectedDayIso: day.toISOString(),
   });
@@ -732,8 +724,8 @@ async function handleSelectingDate(
     title: w.name,
   }));
 
-  const textLines = availableWindows.map(w => `• ${w.name} (${w.range})`);
-  
+  const textLines = availableWindows.map((w) => `• ${w.name} (${w.range})`);
+
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
@@ -744,7 +736,6 @@ async function handleSelectingDate(
 }
 
 async function handleSelectingSession(
-  admin: SupabaseClient<Database>,
   salon: SalonRow,
   customerPhone: string,
   body: string,
@@ -759,8 +750,8 @@ async function handleSelectingSession(
         body: "Something went wrong. Let's start over.",
       })
     );
-    await ensureConversationRow(admin, salon.id, customerPhone, "IDLE", {});
-    await startIdleFlow(admin, salon, customerPhone);
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await startIdleFlow(salon, customerPhone);
     return;
   }
   const day = parseISO(dayIso);
@@ -783,14 +774,14 @@ async function handleSelectingSession(
   }
 
   const ids = ctx.serviceIds ?? [];
-  const { data: services } = await admin
-    .from("services")
-    .select("duration_minutes")
-    .in("id", ids);
+  const res = await db.query(
+    "SELECT duration_minutes FROM public.services WHERE id = ANY($1::uuid[])",
+    [ids]
+  );
+  const services = res.rows;
+  const totalDur = services.reduce((a, s) => a + s.duration_minutes, 0);
 
-  const totalDur = services?.reduce((a, s) => a + s.duration_minutes, 0) ?? 0;
-
-  const windowRes = await getAvailableWindows(admin, salon.id, day, totalDur);
+  const windowRes = await getAvailableWindows(salon.id, day, totalDur);
   if (!windowRes.ok) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
@@ -798,7 +789,7 @@ async function handleSelectingSession(
     return;
   }
 
-  const selectedWindow = windowRes.windows.find(w => w.name.toLowerCase() === sessionChoice);
+  const selectedWindow = windowRes.windows.find((w) => w.name.toLowerCase() === sessionChoice);
   if (!selectedWindow || selectedWindow.status !== "AVAILABLE") {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
@@ -809,15 +800,15 @@ async function handleSelectingSession(
     return;
   }
 
-  const { data: busyRows } = await admin
-    .from("appointments")
-    .select("end_time")
-    .eq("salon_id", salon.id)
-    .in("status", ["pending", "confirmed"])
-    .gte("start_time", selectedWindow.startUtc.toISOString())
-    .lt("start_time", selectedWindow.endUtc.toISOString())
-    .order("end_time", { ascending: false })
-    .limit(1);
+  // Get active queue appointments in the window using standard parameterized SQL
+  const busyRes = await db.query(
+    `SELECT end_time FROM public.appointments 
+     WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+     AND start_time >= $2 AND start_time < $3 
+     ORDER BY end_time DESC LIMIT 1`,
+    [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
+  );
+  const busyRows = busyRes.rows;
 
   let assignedStartUtc = selectedWindow.startUtc;
   if (busyRows && busyRows.length > 0) {
@@ -825,7 +816,7 @@ async function handleSelectingSession(
     assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
   }
 
-  await ensureConversationRow(admin, salon.id, customerPhone, "CONFIRMING_NAME", {
+  await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
     ...ctx,
     slotStarts: [assignedStartUtc.toISOString()],
     selectedSlotIndex: 1,
@@ -843,7 +834,6 @@ async function handleSelectingSession(
 }
 
 async function handleConfirmingName(
-  admin: SupabaseClient<Database>,
   salon: SalonRow,
   customerPhone: string,
   body: string,
@@ -864,26 +854,26 @@ async function handleConfirmingName(
   const slotIdx = ctx.selectedSlotIndex;
   const starts = ctx.slotStarts ?? [];
   if (!ids.length || !slotIdx || !starts[slotIdx - 1]) {
-    await ensureConversationRow(admin, salon.id, customerPhone, "IDLE", {});
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
         body: "Something went wrong. Let's start over — sending services.",
       })
     );
-    await startIdleFlow(admin, salon, customerPhone);
+    await startIdleFlow(salon, customerPhone);
     return;
   }
 
-  const startIso = starts[slotIdx - 1]!;
+  const startIso = starts[slotIdx - 1];
   const startTime = parseISO(startIso);
 
-  const { data: svcRows, error: se } = await admin
-    .from("services")
-    .select("id, name, duration_minutes, price")
-    .in("id", ids);
-  if (se || !svcRows?.length) {
-    console.error(se?.message);
+  const svcRes = await db.query(
+    "SELECT id, name, duration_minutes, price FROM public.services WHERE id = ANY($1::uuid[])",
+    [ids]
+  );
+  const svcRows = svcRes.rows;
+  if (!svcRows.length) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
@@ -897,59 +887,62 @@ async function handleConfirmingName(
   const totalPrice = svcRows.reduce((a, s) => a + Number(s.price), 0);
   const endTime = addMinutes(startTime, totalDur + APPOINTMENT_BUFFER_MINUTES);
 
-  const { data: existing } = await admin
-    .from("customers")
-    .select("id, name")
-    .eq("salon_id", salon.id)
-    .eq("phone", customerPhone)
-    .maybeSingle();
+  // Database Connection for Transaction
+  const client = await db.pool.connect();
+  let customerId = "";
 
-  let customerId = existing?.id;
-  if (existing) {
-    await admin
-      .from("customers")
-      .update({ name })
-      .eq("id", existing.id);
-  } else {
-    const { data: created, error: ce } = await admin
-      .from("customers")
-      .insert({
-        salon_id: salon.id,
-        phone: customerPhone,
-        name,
-      })
-      .select("id")
-      .single();
-    if (ce || !created) {
-      console.error(ce?.message);
-      await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, {
-          toE164: customerPhone,
-          body: "Could not save customer. Try again.",
-        })
+  try {
+    await client.query("BEGIN");
+
+    // 1. Get or create customer inside transaction
+    const existing = await client.query(
+      "SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1",
+      [salon.id, customerPhone]
+    );
+
+    if (existing.rows.length > 0) {
+      customerId = existing.rows[0].id;
+      await client.query(
+        "UPDATE public.customers SET name = $1 WHERE id = $2",
+        [name, customerId]
       );
-      return;
+    } else {
+      const created = await client.query(
+        "INSERT INTO public.customers (salon_id, phone, name) VALUES ($1, $2, $3) RETURNING id",
+        [salon.id, customerPhone, name]
+      );
+      customerId = created.rows[0].id;
     }
-    customerId = created.id;
-  }
 
-  const { data: apt, error: ae } = await admin
-    .from("appointments")
-    .insert({
-      salon_id: salon.id,
-      customer_id: customerId!,
-      start_time: startTime.toISOString(),
-      end_time: endTime.toISOString(),
-      total_duration_minutes: totalDur,
-      total_price: totalPrice,
-      status: "confirmed",
-      reminder_sent: false,
-    })
-    .select("id")
-    .single();
+    // 2. Insert Appointment
+    const aptInsert = await client.query(
+      `INSERT INTO public.appointments 
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false) RETURNING id`,
+      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDur, totalPrice]
+    );
+    const appointmentId = aptInsert.rows[0].id;
 
-  if (ae || !apt) {
-    console.error(ae?.message);
+    // 3. Insert Appointment Services
+    for (const s of svcRows) {
+      await client.query(
+        `INSERT INTO public.appointment_services (appointment_id, service_id, price_at_booking, duration_at_booking) 
+         VALUES ($1, $2, $3, $4)`,
+        [appointmentId, s.id, Number(s.price), s.duration_minutes]
+      );
+    }
+
+    // 4. Insert Notification
+    await client.query(
+      "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'new_booking', $2, false)",
+      [salon.id, appointmentId]
+    );
+
+    await client.query("COMMIT");
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    client.release();
+    console.error("[conversation] booking transaction failed", err.message);
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
@@ -958,24 +951,10 @@ async function handleConfirmingName(
     );
     return;
   }
+  
+  client.release();
 
-  for (const s of svcRows) {
-    await admin.from("appointment_services").insert({
-      appointment_id: apt.id,
-      service_id: s.id,
-      price_at_booking: Number(s.price),
-      duration_at_booking: s.duration_minutes,
-    });
-  }
-
-  await admin.from("notifications").insert({
-    salon_id: salon.id,
-    type: "new_booking",
-    appointment_id: apt.id,
-    is_read: false,
-  });
-
-  await ensureConversationRow(admin, salon.id, customerPhone, "BOOKED", {});
+  await ensureConversationRow(salon.id, customerPhone, "BOOKED", {});
 
   const local = toZonedTime(startTime, SALON_TIMEZONE);
   const when = format(local, "EEE dd MMM, hh:mm a");

@@ -36,10 +36,18 @@ EXCEPTION
   WHEN duplicate_object THEN null;
 END $$;
 
+-- users
+CREATE TABLE IF NOT EXISTS public.users (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  email text UNIQUE NOT NULL,
+  password_hash text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- salons
 CREATE TABLE IF NOT EXISTS public.salons (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  owner_id uuid NOT NULL REFERENCES auth.users (id) ON DELETE CASCADE,
+  owner_id uuid NOT NULL REFERENCES public.users (id) ON DELETE CASCADE,
   name text NOT NULL,
   phone text NOT NULL,
   whatsapp_phone_number_id text,
@@ -168,9 +176,9 @@ CREATE TABLE IF NOT EXISTS public.notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_salon ON public.notifications (salon_id, created_at DESC);
 
--- Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.appointments;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
+-- Realtime (Supabase-specific, commented out for standard PostgreSQL)
+-- ALTER PUBLICATION supabase_realtime ADD TABLE public.appointments;
+-- ALTER PUBLICATION supabase_realtime ADD TABLE public.notifications;
 
 -- updated_at trigger helper
 CREATE OR REPLACE FUNCTION public.set_updated_at()
@@ -187,6 +195,8 @@ CREATE TRIGGER tr_conversation_states_updated
   FOR EACH ROW EXECUTE PROCEDURE public.set_updated_at();
 
 -- RLS
+-- RLS (Commented out for standard PostgreSQL direct connection backend)
+/*
 ALTER TABLE public.salons ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.service_categories ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.services ENABLE ROW LEVEL SECURITY;
@@ -291,8 +301,8 @@ CREATE POLICY "notifications_update_read"
   ON public.notifications FOR UPDATE TO authenticated
   USING (public.user_owns_salon(salon_id))
   WITH CHECK (public.user_owns_salon(salon_id));
-
--- Service role bypasses RLS for webhook/cron inserts on notifications, conversation_states, etc.
+*/
 
 COMMENT ON TABLE public.salons IS 'Nxtstile tenants';
 COMMENT ON COLUMN public.salons.whatsapp_phone_number_id IS 'Meta WhatsApp Phone Number ID for webhook routing';
+

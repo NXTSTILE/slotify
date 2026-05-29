@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { handleConversationMessage } from "@/lib/booking/conversation";
 import type { IncomingParsed } from "@/lib/booking/conversation";
-import { createServiceRoleClient } from "@/lib/supabase/admin";
+import { db } from "@/lib/db";
 import { verifyWebhookSignature } from "@/lib/whatsapp/verify";
 
 export const dynamic = "force-dynamic";
@@ -99,38 +99,36 @@ export async function POST(request: Request) {
 }
 
 async function processPayload(payload: { entry?: WaGraphEntry[] }) {
-  const admin = createServiceRoleClient();
-
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const phoneNumberId = change.value?.metadata?.phone_number_id;
       if (!phoneNumberId) continue;
 
-      const { data: salon, error } = await admin
-        .from("salons")
-        .select("id")
-        .eq("whatsapp_phone_number_id", phoneNumberId)
-        .maybeSingle();
+      try {
+        const result = await db.query(
+          "SELECT id FROM public.salons WHERE whatsapp_phone_number_id = $1 LIMIT 1",
+          [phoneNumberId]
+        );
 
-      if (error) {
-        console.error("[webhook] salon lookup", error.message);
-        continue;
-      }
-      if (!salon) {
-        console.warn("[webhook] No salon for phone_number_id", phoneNumberId);
-        continue;
-      }
-
-      for (const msg of change.value?.messages ?? []) {
-        const parsed = parseIncoming(msg);
-        if (!parsed) continue;
-
-        const from = (msg.from as string) ?? "";
-        try {
-          await handleConversationMessage(admin, salon.id, from, parsed);
-        } catch (e) {
-          console.error("[webhook] conversation error", e);
+        const salon = result.rows[0];
+        if (!salon) {
+          console.warn("[webhook] No salon for phone_number_id", phoneNumberId);
+          continue;
         }
+
+        for (const msg of change.value?.messages ?? []) {
+          const parsed = parseIncoming(msg);
+          if (!parsed) continue;
+
+          const from = (msg.from as string) ?? "";
+          try {
+            await handleConversationMessage(salon.id, from, parsed);
+          } catch (e) {
+            console.error("[webhook] conversation error", e);
+          }
+        }
+      } catch (err: any) {
+        console.error("[webhook] database error during processing", err.message);
       }
     }
   }

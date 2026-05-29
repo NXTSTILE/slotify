@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 import { DashboardShell } from "@/components/dashboard-shell";
 import { DashboardSidebar } from "@/components/dashboard-sidebar";
 
@@ -9,26 +9,28 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  // 1. Fetch user session
+  const session = await getSession();
+  if (!session) {
     redirect("/login");
   }
 
-  const { salon } = await getSalonForUser(supabase, user.id);
+  // 2. Fetch corresponding salon info
+  const salonRes = await db.query(
+    "SELECT id, name FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  const salon = salonRes.rows[0];
   if (!salon) {
     redirect("/setup");
   }
 
-  const { count } = await supabase
-    .from("notifications")
-    .select("*", { count: "exact", head: true })
-    .eq("salon_id", salon.id)
-    .eq("is_read", false);
-
-  const unread = count ?? 0;
+  // 3. Query unread notification count
+  const notifRes = await db.query(
+    "SELECT COUNT(*)::int as count FROM public.notifications WHERE salon_id = $1 AND is_read = false",
+    [salon.id]
+  );
+  const unread = notifRes.rows[0].count || 0;
 
   return (
     <DashboardShell salonId={salon.id} unreadNotifications={unread}>

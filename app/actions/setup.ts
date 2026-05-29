@@ -1,9 +1,9 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
 import { z } from "zod";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 
 const schema = z.object({
   name: z.string().min(2),
@@ -22,26 +22,34 @@ export async function createSalonSetupAction(
     return { error: "Enter salon name and a valid phone number." };
   }
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  // 1. Fetch active session context
+  const session = await getSession();
+  if (!session) {
     return { error: "Not signed in." };
   }
 
-  const { salon: existing } = await getSalonForUser(supabase, user.id);
-  if (existing) {
-    redirect("/dashboard");
+  try {
+    // 2. Check for existing salon for this user
+    const existingRes = await db.query(
+      "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+      [session.userId]
+    );
+    if (existingRes.rows.length > 0) {
+      // User already completed onboarding
+      redirect("/dashboard");
+    }
+
+    // 3. Insert new salon directly into standard PostgreSQL table
+    await db.query(
+      "INSERT INTO public.salons (owner_id, name, phone) VALUES ($1, $2, $3)",
+      [session.userId, parsed.data.name, parsed.data.phone]
+    );
+
+  } catch (err: any) {
+    console.error("[Setup Onboarding Error]", err.message);
+    return { error: "An unexpected database error occurred during setup." };
   }
 
-  const { error } = await supabase.from("salons").insert({
-    owner_id: user.id,
-    name: parsed.data.name,
-    phone: parsed.data.phone,
-  });
-  if (error) {
-    return { error: error.message };
-  }
+  // Redirect to dashboard
   redirect("/dashboard");
 }

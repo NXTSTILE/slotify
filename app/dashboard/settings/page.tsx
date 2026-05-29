@@ -1,27 +1,44 @@
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
+import { redirect } from "next/navigation";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 import { SettingsView } from "./settings-view";
 
 export default async function SettingsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  // 1. Fetch active session context
+  const session = await getSession();
+  if (!session) {
+    redirect("/login");
+  }
 
-  const { salon } = await getSalonForUser(supabase, user.id);
-  if (!salon) return null;
+  // 2. Load salon details
+  const salonRes = await db.query(
+    "SELECT * FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  const salon = salonRes.rows[0];
+  if (!salon) {
+    redirect("/setup");
+  }
 
-  const { data: whRows } = await supabase
-    .from("working_hours")
-    .select("day_of_week, open_time, close_time, is_closed")
-    .eq("salon_id", salon.id);
+  // 3. Load working hours list
+  const whRes = await db.query(
+    "SELECT day_of_week, open_time, close_time, is_closed FROM public.working_hours WHERE salon_id = $1",
+    [salon.id]
+  );
+  const whRows = whRes.rows;
 
-  const { data: holidays } = await supabase
-    .from("holidays")
-    .select("id, date, reason")
-    .eq("salon_id", salon.id)
-    .order("date", { ascending: true });
+  // 4. Load holidays list
+  const holRes = await db.query(
+    "SELECT id, date, reason FROM public.holidays WHERE salon_id = $1 ORDER BY date ASC",
+    [salon.id]
+  );
+  
+  // Format Date objects to serialized yyyy-MM-dd strings to prevent Next.js client component serialization crashes
+  const holidays = holRes.rows.map((h) => ({
+    id: h.id,
+    date: h.date instanceof Date ? h.date.toISOString().split("T")[0] : String(h.date).split("T")[0],
+    reason: h.reason,
+  }));
 
   return (
     <SettingsView
@@ -36,8 +53,8 @@ export default async function SettingsPage() {
         whatsapp_access_token: salon.whatsapp_access_token,
         whatsapp_business_account_id: salon.whatsapp_business_account_id,
       }}
-      workingHours={whRows ?? []}
-      holidays={holidays ?? []}
+      workingHours={whRows}
+      holidays={holidays}
     />
   );
 }

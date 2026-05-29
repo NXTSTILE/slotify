@@ -1,27 +1,30 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
-import type { Database } from "@/lib/types/database";
 import { z } from "zod";
 import { addMinutes } from "date-fns";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 
-type SalonUpdate = Database["public"]["Tables"]["salons"]["Update"];
-
+/**
+ * Secures dashboard actions by verifying user session and fetching their active salon.
+ */
 async function requireSalon() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) {
+  const session = await getSession();
+  if (!session) {
     throw new Error("Unauthorized");
   }
-  const { salon, error } = await getSalonForUser(supabase, user.id);
-  if (error || !salon) {
+  
+  const result = await db.query(
+    "SELECT * FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  
+  const salon = result.rows[0];
+  if (!salon) {
     throw new Error("Salon not found");
   }
-  return { supabase, salon };
+  return { salon };
 }
 
 const salonInfoSchema = z.object({
@@ -46,14 +49,16 @@ export async function updateSalonInfoAction(formData: FormData) {
     return { error: "Invalid salon info." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("salons")
-      .update(parsed.data)
-      .eq("id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    const { name, phone, address, city, cancellation_policy, services_display_mode } = parsed.data;
+    
+    await db.query(
+      `UPDATE public.salons 
+       SET name = $1, phone = $2, address = $3, city = $4, cancellation_policy = $5, services_display_mode = $6 
+       WHERE id = $7`,
+      [name, phone, address ?? null, city ?? null, cancellation_policy ?? null, services_display_mode, salon.id]
+    );
+
     revalidatePath("/dashboard/settings");
     return { ok: true as const };
   } catch (e) {
@@ -77,21 +82,23 @@ export async function updateWhatsAppAction(formData: FormData) {
     return { error: "Invalid WhatsApp fields." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const patch: SalonUpdate = {};
-    if (parsed.data.whatsapp_phone_number_id !== undefined) {
-      patch.whatsapp_phone_number_id = parsed.data.whatsapp_phone_number_id || null;
-    }
-    if (parsed.data.whatsapp_access_token !== undefined) {
-      patch.whatsapp_access_token = parsed.data.whatsapp_access_token || null;
-    }
-    if (parsed.data.whatsapp_business_account_id !== undefined) {
-      patch.whatsapp_business_account_id = parsed.data.whatsapp_business_account_id || null;
-    }
-    const { error } = await supabase.from("salons").update(patch).eq("id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    const { whatsapp_phone_number_id, whatsapp_access_token, whatsapp_business_account_id } = parsed.data;
+
+    await db.query(
+      `UPDATE public.salons 
+       SET whatsapp_phone_number_id = COALESCE($1, whatsapp_phone_number_id), 
+           whatsapp_access_token = COALESCE($2, whatsapp_access_token), 
+           whatsapp_business_account_id = COALESCE($3, whatsapp_business_account_id) 
+       WHERE id = $4`,
+      [
+        whatsapp_phone_number_id || null,
+        whatsapp_access_token || null,
+        whatsapp_business_account_id || null,
+        salon.id
+      ]
+    );
+
     revalidatePath("/dashboard/settings");
     return { ok: true as const };
   } catch (e) {
@@ -117,20 +124,23 @@ export async function upsertWorkingHourAction(formData: FormData) {
     return { error: "Invalid hours." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase.from("working_hours").upsert(
-      {
-        salon_id: salon.id,
-        day_of_week: parsed.data.day_of_week,
-        open_time: parsed.data.is_closed ? null : parsed.data.open_time ?? null,
-        close_time: parsed.data.is_closed ? null : parsed.data.close_time ?? null,
-        is_closed: parsed.data.is_closed,
-      },
-      { onConflict: "salon_id,day_of_week" }
+    const { salon } = await requireSalon();
+    const { day_of_week, open_time, close_time, is_closed } = parsed.data;
+
+    await db.query(
+      `INSERT INTO public.working_hours (salon_id, day_of_week, open_time, close_time, is_closed) 
+       VALUES ($1, $2, $3, $4, $5) 
+       ON CONFLICT (salon_id, day_of_week) 
+       DO UPDATE SET open_time = $3, close_time = $4, is_closed = $5`,
+      [
+        salon.id,
+        day_of_week,
+        is_closed ? null : open_time ?? null,
+        is_closed ? null : close_time ?? null,
+        is_closed
+      ]
     );
-    if (error) {
-      return { error: error.message };
-    }
+
     revalidatePath("/dashboard/settings");
     return { ok: true as const };
   } catch (e) {
@@ -152,15 +162,12 @@ export async function addHolidayAction(formData: FormData) {
     return { error: "Invalid date." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase.from("holidays").insert({
-      salon_id: salon.id,
-      date: parsed.data.date,
-      reason: parsed.data.reason ?? null,
-    });
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "INSERT INTO public.holidays (salon_id, date, reason) VALUES ($1, $2, $3)",
+      [salon.id, parsed.data.date, parsed.data.reason ?? null]
+    );
+
     revalidatePath("/dashboard/settings");
     return { ok: true as const };
   } catch (e) {
@@ -174,15 +181,12 @@ export async function deleteHolidayAction(formData: FormData) {
     return { error: "Missing id." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("holidays")
-      .delete()
-      .eq("id", id)
-      .eq("salon_id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "DELETE FROM public.holidays WHERE id = $1 AND salon_id = $2",
+      [id, salon.id]
+    );
+
     revalidatePath("/dashboard/settings");
     return { ok: true as const };
   } catch (e) {
@@ -247,19 +251,20 @@ export async function addCategoryAction(formData: FormData) {
     return { error: "Category name required." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { count } = await supabase
-      .from("service_categories")
-      .select("*", { count: "exact", head: true })
-      .eq("salon_id", salon.id);
-    const { error } = await supabase.from("service_categories").insert({
-      salon_id: salon.id,
-      name: parsed.data.name,
-      display_order: (count ?? 0) + 1,
-    });
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    
+    // Calculate display order sequence
+    const countRes = await db.query(
+      "SELECT COUNT(*) as count FROM public.service_categories WHERE salon_id = $1",
+      [salon.id]
+    );
+    const count = Number(countRes.rows[0].count);
+
+    await db.query(
+      "INSERT INTO public.service_categories (salon_id, name, display_order) VALUES ($1, $2, $3)",
+      [salon.id, parsed.data.name, count + 1]
+    );
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -281,29 +286,34 @@ export async function addServiceAction(formData: FormData) {
     duration_minutes: formData.get("duration_minutes"),
     price: formData.get("price"),
     category_id: formData.get("category_id") || null,
-    is_active: formData.get("is_active") === "true",
+    is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
   });
   if (!parsed.success) {
     return { error: "Duration must be a multiple of 5; check price." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { count } = await supabase
-      .from("services")
-      .select("*", { count: "exact", head: true })
-      .eq("salon_id", salon.id);
-    const { error } = await supabase.from("services").insert({
-      salon_id: salon.id,
-      name: parsed.data.name,
-      duration_minutes: parsed.data.duration_minutes,
-      price: parsed.data.price,
-      category_id: parsed.data.category_id ?? null,
-      is_active: parsed.data.is_active,
-      display_order: (count ?? 0) + 1,
-    });
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    
+    const countRes = await db.query(
+      "SELECT COUNT(*) as count FROM public.services WHERE salon_id = $1",
+      [salon.id]
+    );
+    const count = Number(countRes.rows[0].count);
+
+    await db.query(
+      `INSERT INTO public.services (salon_id, name, duration_minutes, price, category_id, is_active, display_order) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        salon.id,
+        parsed.data.name,
+        parsed.data.duration_minutes,
+        parsed.data.price,
+        parsed.data.category_id ?? null,
+        parsed.data.is_active ?? true,
+        count + 1
+      ]
+    );
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -321,27 +331,28 @@ export async function updateServiceAction(formData: FormData) {
     duration_minutes: formData.get("duration_minutes"),
     price: formData.get("price"),
     category_id: formData.get("category_id") || null,
-    is_active: formData.get("is_active") === "true",
+    is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
   });
   if (!parsed.success) {
     return { error: "Invalid service fields." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("services")
-      .update({
-        name: parsed.data.name,
-        duration_minutes: parsed.data.duration_minutes,
-        price: parsed.data.price,
-        category_id: parsed.data.category_id ?? null,
-        is_active: parsed.data.is_active,
-      })
-      .eq("id", id)
-      .eq("salon_id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      `UPDATE public.services 
+       SET name = $1, duration_minutes = $2, price = $3, category_id = $4, is_active = $5 
+       WHERE id = $6 AND salon_id = $7`,
+      [
+        parsed.data.name,
+        parsed.data.duration_minutes,
+        parsed.data.price,
+        parsed.data.category_id ?? null,
+        parsed.data.is_active ?? true,
+        id,
+        salon.id
+      ]
+    );
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -355,15 +366,12 @@ export async function deleteServiceAction(formData: FormData) {
     return { error: "Missing id." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("services")
-      .delete()
-      .eq("id", id)
-      .eq("salon_id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "DELETE FROM public.services WHERE id = $1 AND salon_id = $2",
+      [id, salon.id]
+    );
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -377,17 +385,26 @@ export async function reorderServicesAction(order: string[]) {
     return { error: "Invalid order payload." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    for (let i = 0; i < ids.data.length; i++) {
-      const { error } = await supabase
-        .from("services")
-        .update({ display_order: i + 1 })
-        .eq("id", ids.data[i])
-        .eq("salon_id", salon.id);
-      if (error) {
-        return { error: error.message };
+    const { salon } = await requireSalon();
+    
+    // Batch update displays
+    const client = await db.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (let i = 0; i < ids.data.length; i++) {
+        await client.query(
+          "UPDATE public.services SET display_order = $1 WHERE id = $2 AND salon_id = $3",
+          [i + 1, ids.data[i], salon.id]
+        );
       }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -401,17 +418,25 @@ export async function reorderCategoriesAction(order: string[]) {
     return { error: "Invalid order payload." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    for (let i = 0; i < ids.data.length; i++) {
-      const { error } = await supabase
-        .from("service_categories")
-        .update({ display_order: i + 1 })
-        .eq("id", ids.data[i])
-        .eq("salon_id", salon.id);
-      if (error) {
-        return { error: error.message };
+    const { salon } = await requireSalon();
+    
+    const client = await db.pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (let i = 0; i < ids.data.length; i++) {
+        await client.query(
+          "UPDATE public.service_categories SET display_order = $1 WHERE id = $2 AND salon_id = $3",
+          [i + 1, ids.data[i], salon.id]
+        );
       }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -425,15 +450,12 @@ export async function deleteCategoryAction(formData: FormData) {
     return { error: "Missing id." };
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("service_categories")
-      .delete()
-      .eq("id", id)
-      .eq("salon_id", salon.id);
-    if (error) {
-      return { error: error.message };
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "DELETE FROM public.service_categories WHERE id = $1 AND salon_id = $2",
+      [id, salon.id]
+    );
+
     revalidatePath("/dashboard/services");
     return { ok: true as const };
   } catch (e) {
@@ -477,16 +499,12 @@ export async function updateAppointmentStatusAction(formData: FormData): Promise
     return;
   }
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("appointments")
-      .update({ status: parsed.data.status })
-      .eq("id", id)
-      .eq("salon_id", salon.id);
-    if (error) {
-      console.error("[updateAppointmentStatusAction]", error.message);
-      return;
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "UPDATE public.appointments SET status = $1 WHERE id = $2 AND salon_id = $3",
+      [parsed.data.status, id, salon.id]
+    );
+
     revalidatePath("/dashboard");
     revalidatePath("/dashboard/appointments");
   } catch (e) {
@@ -496,16 +514,11 @@ export async function updateAppointmentStatusAction(formData: FormData): Promise
 
 export async function markNotificationsReadAction(): Promise<void> {
   try {
-    const { supabase, salon } = await requireSalon();
-    const { error } = await supabase
-      .from("notifications")
-      .update({ is_read: true })
-      .eq("salon_id", salon.id)
-      .eq("is_read", false);
-    if (error) {
-      console.error("[markNotificationsReadAction]", error.message);
-      return;
-    }
+    const { salon } = await requireSalon();
+    await db.query(
+      "UPDATE public.notifications SET is_read = true WHERE salon_id = $1 AND is_read = false",
+      [salon.id]
+    );
     revalidatePath("/dashboard");
   } catch (e) {
     console.error("[markNotificationsReadAction]", e);
@@ -517,33 +530,54 @@ export async function addWalkInBookingAction(formData: FormData) {
   const phone = formData.get("phone") as string;
   const serviceIds = JSON.parse(formData.get("serviceIds") as string) as string[];
 
+  const client = await db.pool.connect();
+
   try {
-    const { supabase, salon } = await requireSalon();
+    const { salon } = await requireSalon();
 
-    const { data: customer } = await supabase
-      .from("customers")
-      .upsert({ salon_id: salon.id, name, phone }, { onConflict: "salon_id,phone" })
-      .select("id")
-      .single();
+    await client.query("BEGIN");
 
-    const { data: dbServices } = await supabase
-      .from("services")
-      .select("id, price, duration_minutes")
-      .in("id", serviceIds);
+    // 1. Upsert Customer
+    const existing = await client.query(
+      "SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1",
+      [salon.id, phone]
+    );
+    let customerId = "";
+    if (existing.rows.length > 0) {
+      customerId = existing.rows[0].id;
+      await client.query(
+        "UPDATE public.customers SET name = $1 WHERE id = $2",
+        [name, customerId]
+      );
+    } else {
+      const created = await client.query(
+        "INSERT INTO public.customers (salon_id, phone, name) VALUES ($1, $2, $3) RETURNING id",
+        [salon.id, phone, name]
+      );
+      customerId = created.rows[0].id;
+    }
+
+    // 2. Fetch selected services details
+    const svcRes = await client.query(
+      "SELECT id, price, duration_minutes FROM public.services WHERE id = ANY($1::uuid[])",
+      [serviceIds]
+    );
+    const dbServices = svcRes.rows;
 
     if (!dbServices || dbServices.length === 0) {
+      client.release();
       return { error: "No services found." };
     }
 
-    const { data: lastApt } = await supabase
-      .from("appointments")
-      .select("end_time")
-      .eq("salon_id", salon.id)
-      .gte("start_time", new Date().toISOString())
-      .in("status", ["pending", "confirmed"])
-      .order("end_time", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // 3. Find latest appointment end time inside window
+    const lastAptRes = await client.query(
+      `SELECT end_time FROM public.appointments 
+       WHERE salon_id = $1 AND start_time >= NOW() 
+       AND status IN ('pending', 'confirmed') 
+       ORDER BY end_time DESC LIMIT 1`,
+      [salon.id]
+    );
+    const lastApt = lastAptRes.rows[0];
 
     const now = new Date();
     let startTime = addMinutes(now, 2); 
@@ -553,38 +587,38 @@ export async function addWalkInBookingAction(formData: FormData) {
     }
 
     const totalDuration = dbServices.reduce((sum, s) => sum + s.duration_minutes, 0);
-    const totalPrice = dbServices.reduce((sum, s) => sum + s.price, 0);
+    const totalPrice = dbServices.reduce((sum, s) => sum + Number(s.price), 0);
     const endTime = addMinutes(startTime, totalDuration);
 
-    const { data: apt, error: aptErr } = await supabase
-      .from("appointments")
-      .insert({
-        salon_id: salon.id,
-        customer_id: customer!.id,
-        start_time: startTime.toISOString(),
-        end_time: endTime.toISOString(),
-        total_duration_minutes: totalDuration,
-        total_price: totalPrice,
-        status: "confirmed"
-      })
-      .select("id")
-      .single();
+    // 4. Insert Appointment
+    const aptInsert = await client.query(
+      `INSERT INTO public.appointments 
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed') RETURNING id`,
+      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDuration, totalPrice]
+    );
+    const appointmentId = aptInsert.rows[0].id;
 
-    if (aptErr) throw aptErr;
-
+    // 5. Insert Appointment Services relation
     for (const service of dbServices) {
-      await supabase.from("appointment_services").insert({
-        appointment_id: apt.id,
-        service_id: service.id,
-        price_at_booking: service.price,
-        duration_at_booking: service.duration_minutes
-      });
+      await client.query(
+        `INSERT INTO public.appointment_services (appointment_id, service_id, price_at_booking, duration_at_booking) 
+         VALUES ($1, $2, $3, $4)`,
+        [appointmentId, service.id, Number(service.price), service.duration_minutes]
+      );
     }
+
+    await client.query("COMMIT");
+    client.release();
 
     revalidatePath("/dashboard");
     return { ok: true as const, startTime: startTime.toISOString() };
 
   } catch (e) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    client.release();
     console.error("[addWalkInBookingAction] error:", e);
     return { error: "Failed to add walk-in." };
   }

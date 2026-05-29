@@ -1,5 +1,6 @@
-import { createClient } from "@/lib/supabase/server";
-import { getSalonForUser } from "@/lib/salon";
+import { redirect } from "next/navigation";
+import { db } from "@/lib/db";
+import { getSession } from "@/lib/auth";
 import {
   submitAddCategory,
   submitAddService,
@@ -13,28 +14,35 @@ import { Separator } from "@/components/ui/separator";
 import { ServicesReorder } from "./services-reorder";
 
 export default async function ServicesPage() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return null;
+  // 1. Fetch user session
+  const session = await getSession();
+  if (!session) {
+    redirect("/login");
+  }
 
-  const { salon } = await getSalonForUser(supabase, user.id);
-  if (!salon) return null;
+  // 2. Load salon info
+  const salonRes = await db.query(
+    "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    [session.userId]
+  );
+  const salon = salonRes.rows[0];
+  if (!salon) {
+    redirect("/setup");
+  }
 
-  const { data: categories } = await supabase
-    .from("service_categories")
-    .select("*")
-    .eq("salon_id", salon.id)
-    .order("display_order", { ascending: true });
+  // 3. Query all categories in order
+  const catRes = await db.query(
+    "SELECT * FROM public.service_categories WHERE salon_id = $1 ORDER BY display_order ASC",
+    [salon.id]
+  );
+  const categories = catRes.rows;
 
-  const { data: services } = await supabase
-    .from("services")
-    .select("*")
-    .eq("salon_id", salon.id)
-    .order("display_order", { ascending: true });
-
-  const svcList = services ?? [];
+  // 4. Query all services in order
+  const svcRes = await db.query(
+    "SELECT * FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC",
+    [salon.id]
+  );
+  const services = svcRes.rows;
 
   return (
     <div className="space-y-8">
@@ -86,7 +94,7 @@ export default async function ServicesPage() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
               >
                 <option value="">None</option>
-                {(categories ?? []).map((c) => (
+                {categories.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
                   </option>
@@ -115,8 +123,8 @@ export default async function ServicesPage() {
       <Separator />
 
       <ServicesReorder
-        categories={(categories ?? []).map((c) => ({ id: c.id, name: c.name }))}
-        services={svcList.map((s) => ({
+        categories={categories.map((c) => ({ id: c.id, name: c.name }))}
+        services={services.map((s) => ({
           id: s.id,
           name: s.name,
           duration_minutes: s.duration_minutes,
@@ -126,13 +134,13 @@ export default async function ServicesPage() {
         }))}
       />
 
-      {(categories ?? []).length > 0 && (
+      {categories.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Categories</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            {(categories ?? []).map((c) => (
+            {categories.map((c) => (
               <form key={c.id} action={submitDeleteCategory} className="inline">
                 <input type="hidden" name="id" value={c.id} />
                 <Button type="submit" variant="outline" size="sm">

@@ -1,6 +1,21 @@
 version: '3.8'
 
 services:
+  # Local PostgreSQL Database service
+  postgres:
+    image: postgres:15-alpine
+    container_name: slotify-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_local_password
+      POSTGRES_DB: slotify
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+
+  # Next.js Application service
   slotify:
     build:
       context: .
@@ -10,14 +25,18 @@ services:
         - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
     ports:
       - "3000:3000"
+    depends_on:
+      - postgres
     restart: always
     environment:
-      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
-      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+      - JWT_SECRET=${JWT_SECRET}
       - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN}
       - WHATSAPP_APP_SECRET=${WHATSAPP_APP_SECRET}
       - WHATSAPP_API_VERSION=${WHATSAPP_API_VERSION:-v19.0}
       - CRON_SECRET=${CRON_SECRET}
     env_file:
       - .env
+
+volumes:
+  pgdata:

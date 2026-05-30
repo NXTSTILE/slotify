@@ -2,17 +2,24 @@ import { Pool, QueryResult, QueryResultRow } from 'pg';
 
 let pool: Pool;
 
-const connectionString = process.env.DATABASE_URL;
+const rawConnectionString = process.env.DATABASE_URL;
 
-if (!connectionString) {
+if (!rawConnectionString) {
   throw new Error("Missing DATABASE_URL environment variable");
 }
+
+// Strip sslmode from the URL so our explicit ssl object is never overridden
+// by the connection string parser (pg v8+ treats sslmode=require as verify-full)
+const connectionString = rawConnectionString.replace(/[?&]sslmode=[^&]*/g, (match) => {
+  const isQuery = match.startsWith('?');
+  return isQuery ? '?' : '';
+}).replace(/\?$/, '');
 
 if (process.env.NODE_ENV === 'production') {
   pool = new Pool({
     connectionString,
     ssl: {
-      rejectUnauthorized: false // DigitalOcean Managed Databases enforce SSL verification
+      rejectUnauthorized: false
     },
     max: 20,
     idleTimeoutMillis: 30000,

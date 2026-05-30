@@ -23,7 +23,7 @@ export default async function AppointmentsPage() {
 
   // 3. Load all appointments for the salon
   const aptRes = await db.query(
-    `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id 
+    `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id, staff_id 
      FROM public.appointments 
      WHERE salon_id = $1 
      ORDER BY start_time ASC`,
@@ -64,7 +64,21 @@ export default async function AppointmentsPage() {
     servicesByApt.set(l.appointment_id, list);
   }
 
-  // 6. Format initial appointments array structure for week-day rendering
+  // 7. Bulk-fetch staff names
+  const staffIds = Array.from(
+    new Set(aptRows.map((a) => a.staff_id).filter(Boolean))
+  );
+  let staffRows: any[] = [];
+  if (staffIds.length > 0) {
+    const staffRes = await db.query(
+      "SELECT id, name FROM public.staff WHERE id = ANY($1::uuid[])",
+      [staffIds]
+    );
+    staffRows = staffRes.rows;
+  }
+  const staffMap = new Map(staffRows.map((s) => [s.id, s.name as string]));
+
+  // 8. Format initial appointments array structure for week-day rendering
   const initial = aptRows.map((a) => ({
     id: a.id,
     start_time: a.start_time,
@@ -73,6 +87,7 @@ export default async function AppointmentsPage() {
     total_price: a.total_price,
     total_duration_minutes: a.total_duration_minutes,
     customers: custMap.get(a.customer_id) ?? { name: "", phone: "" },
+    staff_name: a.staff_id ? (staffMap.get(a.staff_id) ?? null) : null,
     appointment_services: (servicesByApt.get(a.id) ?? []).map((name) => ({
       service_id: "",
       services: { name },

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { addMinutes } from "date-fns";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
+import { assignStaff } from "@/lib/booking/staffAssignment";
 
 /**
  * Secures dashboard actions by verifying user session and fetching their active salon.
@@ -590,12 +591,21 @@ export async function addWalkInBookingAction(formData: FormData) {
     const totalPrice = dbServices.reduce((sum, s) => sum + Number(s.price), 0);
     const endTime = addMinutes(startTime, totalDuration);
 
-    // 4. Insert Appointment
+    // 4a. Smart staff assignment
+    const staffResult = await assignStaff(
+      salon.id,
+      serviceIds,
+      startTime,
+      totalDuration
+    );
+    const staffId = staffResult?.staffId ?? null;
+
+    // 4b. Insert Appointment
     const aptInsert = await client.query(
       `INSERT INTO public.appointments 
-       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status) 
-       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed') RETURNING id`,
-      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDuration, totalPrice]
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, staff_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', $7) RETURNING id`,
+      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDuration, totalPrice, staffId]
     );
     const appointmentId = aptInsert.rows[0].id;
 

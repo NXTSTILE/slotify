@@ -27,6 +27,7 @@ type Row = {
   status: string;
   total_price: number;
   total_duration_minutes: number;
+  staff_name: string | null;
   customers: { name: string; phone: string } | null;
   appointment_services:
     | { service_id: string; services: { name: string } | null }[]
@@ -154,9 +155,16 @@ export function AppointmentsView({
                       className="flex w-full flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/60"
                       onClick={() => setOpenId(a.id)}
                     >
-                      <span>
-                        {format(formatLocal(a.start_time), "hh:mm a")} ·{" "}
-                        {a.customers?.name ?? "Customer"}
+                      <span className="flex flex-col gap-0.5">
+                        <span>
+                          {format(formatLocal(a.start_time), "hh:mm a")} ·{" "}
+                          {a.customers?.name ?? "Customer"}
+                        </span>
+                        {a.staff_name && (
+                          <span className="text-xs text-muted-foreground">
+                            👤 {a.staff_name}
+                          </span>
+                        )}
                       </span>
                       <Badge variant="outline">{a.status}</Badge>
                     </button>
@@ -206,6 +214,12 @@ function AppointmentDetailBody({ row }: { row: Row }) {
         {format(formatLocal(row.start_time), "MMM d, yyyy hh:mm a")} –{" "}
         {format(formatLocal(row.end_time), "hh:mm a")}
       </p>
+      {row.staff_name && (
+        <p className="flex items-center gap-1.5">
+          <span className="text-muted-foreground">👤 Staff:</span>
+          <span className="font-medium">{row.staff_name}</span>
+        </p>
+      )}
       <p>
         Services: {svc}
       </p>

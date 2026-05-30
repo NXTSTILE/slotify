@@ -8,6 +8,7 @@ import {
   getAvailableWindows,
   parseDdMmYyyyKolkata,
 } from "@/lib/booking/slots";
+import { assignStaff } from "@/lib/booking/staffAssignment";
 import {
   sendWhatsAppText,
   sendWhatsAppList,
@@ -23,6 +24,9 @@ const CtxSchema = z.object({
   pendingCancelAppointmentId: z.string().uuid().optional(),
   pendingReschedule: z.boolean().optional(),
   lastListMax: z.number().int().optional(),
+  // Staff assignment
+  assignedStaffId: z.string().uuid().optional(),
+  assignedStaffName: z.string().optional(),
 });
 
 type Ctx = z.infer<typeof CtxSchema>;
@@ -800,35 +804,59 @@ async function handleSelectingSession(
     return;
   }
 
-  // Get active queue appointments in the window using standard parameterized SQL
-  const busyRes = await db.query(
-    `SELECT end_time FROM public.appointments 
-     WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
-     AND start_time >= $2 AND start_time < $3 
-     ORDER BY end_time DESC LIMIT 1`,
-    [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
+  // Use smart staff assignment: closest slot, specialists before generalists
+  const staffResult = await assignStaff(
+    salon.id,
+    ids,
+    selectedWindow.startUtc,
+    totalDur
   );
-  const busyRows = busyRes.rows;
 
-  let assignedStartUtc = selectedWindow.startUtc;
-  if (busyRows && busyRows.length > 0) {
-    const lastEndTime = parseISO(busyRows[0].end_time);
-    assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
+  let assignedStartUtc: Date;
+  let assignedStaffId: string | undefined;
+  let assignedStaffName: string | undefined;
+
+  if (staffResult) {
+    // Staff found — use their computed available start
+    assignedStartUtc = staffResult.assignedStartUtc;
+    assignedStaffId = staffResult.staffId;
+    assignedStaffName = staffResult.staffName;
+  } else {
+    // No staff configured / none can do the services — fall back to salon-level queue
+    const busyRes = await db.query(
+      `SELECT end_time FROM public.appointments 
+       WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+       AND start_time >= $2 AND start_time < $3 
+       ORDER BY end_time DESC LIMIT 1`,
+      [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
+    );
+    const busyRows = busyRes.rows;
+    assignedStartUtc = selectedWindow.startUtc;
+    if (busyRows && busyRows.length > 0) {
+      const lastEndTime = parseISO(busyRows[0].end_time);
+      assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
+    }
   }
 
   await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
     ...ctx,
     slotStarts: [assignedStartUtc.toISOString()],
     selectedSlotIndex: 1,
+    assignedStaffId,
+    assignedStaffName,
   });
 
   const localStart = toZonedTime(assignedStartUtc, SALON_TIMEZONE);
   const timeStr = format(localStart, "hh:mm a");
 
+  const staffLine = assignedStaffName
+    ? `Your appointment is with *${assignedStaffName}*`
+    : `You've been added to the queue`;
+
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body: `You've been added to the queue! Your estimated start time is *${timeStr}* (${SALON_TIMEZONE}). What's your name for the booking?`,
+      body: `${staffLine} at *${timeStr}* (${SALON_TIMEZONE}). What's your name for the booking?`,
     })
   );
 }
@@ -914,12 +942,13 @@ async function handleConfirmingName(
       customerId = created.rows[0].id;
     }
 
-    // 2. Insert Appointment
+    // 2. Insert Appointment (with staff_id if assigned)
+    const staffId = ctx.assignedStaffId ?? null;
     const aptInsert = await client.query(
       `INSERT INTO public.appointments 
-       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent) 
-       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false) RETURNING id`,
-      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDur, totalPrice]
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, staff_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false, $7) RETURNING id`,
+      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDur, totalPrice, staffId]
     );
     const appointmentId = aptInsert.rows[0].id;
 
@@ -959,6 +988,9 @@ async function handleConfirmingName(
   const local = toZonedTime(startTime, SALON_TIMEZONE);
   const when = format(local, "EEE dd MMM, hh:mm a");
   const svcLine = svcRows.map((s) => `• ${s.name}`).join("\n");
+  const staffConfirmLine = ctx.assignedStaffName
+    ? `Staff: ${ctx.assignedStaffName}\n`
+    : "";
 
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
@@ -967,6 +999,7 @@ async function handleConfirmingName(
         `✅ *Booking confirmed*\n` +
         `${svcLine}\n` +
         `When: ${when} (${SALON_TIMEZONE})\n` +
+        `${staffConfirmLine}` +
         `Total: ₹${totalPrice.toFixed(2)}\n` +
         `Name: ${name}\n\n` +
         `Send HELP anytime.`,

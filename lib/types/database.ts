@@ -208,6 +208,7 @@ export interface Database {
           total_price: number;
           status: AppointmentStatus;
           reminder_sent: boolean;
+          staff_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -220,6 +221,7 @@ export interface Database {
           total_price: number;
           status?: AppointmentStatus;
           reminder_sent?: boolean;
+          staff_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -232,6 +234,7 @@ export interface Database {
           total_price?: number;
           status?: AppointmentStatus;
           reminder_sent?: boolean;
+          staff_id?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -311,6 +314,45 @@ export interface Database {
           appointment_id?: string | null;
           is_read?: boolean;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      staff: {
+        Row: {
+          id: string;
+          salon_id: string;
+          name: string;
+          is_active: boolean;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          salon_id: string;
+          name: string;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          salon_id?: string;
+          name?: string;
+          is_active?: boolean;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      staff_services: {
+        Row: {
+          staff_id: string;
+          service_id: string;
+        };
+        Insert: {
+          staff_id: string;
+          service_id: string;
+        };
+        Update: {
+          staff_id?: string;
+          service_id?: string;
         };
         Relationships: [];
       };

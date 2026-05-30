@@ -61,7 +61,7 @@ export async function GET(request: Request) {
       if (!phone || !salon) continue;
 
       const pid = salon.whatsapp_phone_number_id;
-      const tok = salon.whatsapp_access_token;
+      const tok = salon.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN;
       if (!pid || !tok) {
         console.warn("[cron/reminders] Missing WhatsApp credentials for salon", salon.id);
         continue;

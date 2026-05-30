@@ -114,7 +114,7 @@ async function sendAuth(
   fn: (pid: string, token: string) => Promise<{ ok: boolean; error?: string }>
 ) {
   const pid = salon.whatsapp_phone_number_id;
-  const token = salon.whatsapp_access_token;
+  const token = salon.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN;
   if (!pid || !token) {
     console.error("[conversation] Missing WhatsApp credentials for salon", salon.id);
     return;

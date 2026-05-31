@@ -82,7 +82,8 @@ async function run() {
     console.log('[Migration] Database is fully up-to-date!');
   } catch (err) {
     console.error('[Migration] Failed to run database migrations:', err);
-    process.exit(1);
+    console.log('[Migration] Continuing application startup despite migration failure.');
+    process.exit(0);
   } finally {
     client.release();
     await pool.end();

@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "node run-migrations.js && next start",
+    "start": "node run-migrations.js && node server.js",
     "lint": "next lint"
   },
   "dependencies": {

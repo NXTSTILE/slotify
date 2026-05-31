@@ -12,11 +12,6 @@ services:
       branch: main
       deploy_on_push: true
     
-    # Build and Run configuration
-    build_command: npm run build
-    run_command: npm run start
-    environment_slug: node-js
-    
     # Sizing configuration (basic-xxs is the starting tier, costing ~$5.00/month)
     instance_count: 1
     instance_size_slug: basic-xxs

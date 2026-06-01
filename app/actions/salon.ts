@@ -74,31 +74,35 @@ const waSchema = z.object({
 });
 
 export async function updateWhatsAppAction(formData: FormData) {
-  const parsed = waSchema.safeParse({
-    whatsapp_phone_number_id: formData.get("whatsapp_phone_number_id") || undefined,
-    whatsapp_access_token: formData.get("whatsapp_access_token") || undefined,
-    whatsapp_business_account_id: formData.get("whatsapp_business_account_id") || undefined,
-  });
-  if (!parsed.success) {
-    return { error: "Invalid WhatsApp fields." };
-  }
+  const phoneId = formData.get("whatsapp_phone_number_id") as string | null;
+  const businessId = formData.get("whatsapp_business_account_id") as string | null;
+  const accessToken = formData.get("whatsapp_access_token") as string | null;
+
   try {
     const { salon } = await requireSalon();
-    const { whatsapp_phone_number_id, whatsapp_access_token, whatsapp_business_account_id } = parsed.data;
 
-    await db.query(
-      `UPDATE public.salons 
-       SET whatsapp_phone_number_id = COALESCE($1, whatsapp_phone_number_id), 
-           whatsapp_access_token = COALESCE($2, whatsapp_access_token), 
-           whatsapp_business_account_id = COALESCE($3, whatsapp_business_account_id) 
-       WHERE id = $4`,
-      [
-        whatsapp_phone_number_id || null,
-        whatsapp_access_token || null,
-        whatsapp_business_account_id || null,
-        salon.id
-      ]
-    );
+    const cleanPhoneId = phoneId && phoneId.trim() !== "" ? phoneId.trim() : null;
+    const cleanBusinessId = businessId && businessId.trim() !== "" ? businessId.trim() : null;
+    const cleanAccessToken = accessToken && accessToken.trim() !== "" ? accessToken.trim() : null;
+
+    if (cleanAccessToken) {
+      await db.query(
+        `UPDATE public.salons 
+         SET whatsapp_phone_number_id = $1, 
+             whatsapp_access_token = $2, 
+             whatsapp_business_account_id = $3 
+         WHERE id = $4`,
+        [cleanPhoneId, cleanAccessToken, cleanBusinessId, salon.id]
+      );
+    } else {
+      await db.query(
+        `UPDATE public.salons 
+         SET whatsapp_phone_number_id = $1, 
+             whatsapp_business_account_id = $2 
+         WHERE id = $3`,
+        [cleanPhoneId, cleanBusinessId, salon.id]
+      );
+    }
 
     revalidatePath("/dashboard/settings");
     return { ok: true as const };

@@ -67,26 +67,21 @@ const waSchema = z.object({
 });
 
 export async function updateWhatsAppAction(formData: FormData) {
-  const parsed = waSchema.safeParse({
-    whatsapp_phone_number_id: formData.get("whatsapp_phone_number_id") || undefined,
-    whatsapp_access_token: formData.get("whatsapp_access_token") || undefined,
-    whatsapp_business_account_id: formData.get("whatsapp_business_account_id") || undefined,
-  });
-  if (!parsed.success) {
-    return { error: "Invalid WhatsApp fields." };
-  }
+  const phoneId = formData.get("whatsapp_phone_number_id") as string | null;
+  const businessId = formData.get("whatsapp_business_account_id") as string | null;
+  const accessToken = formData.get("whatsapp_access_token") as string | null;
+
   try {
     const { supabase, salon } = await requireSalon();
-    const patch: SalonUpdate = {};
-    if (parsed.data.whatsapp_phone_number_id !== undefined) {
-      patch.whatsapp_phone_number_id = parsed.data.whatsapp_phone_number_id || null;
+    const patch: SalonUpdate = {
+      whatsapp_phone_number_id: phoneId && phoneId.trim() !== "" ? phoneId.trim() : null,
+      whatsapp_business_account_id: businessId && businessId.trim() !== "" ? businessId.trim() : null,
+    };
+
+    if (accessToken && accessToken.trim() !== "") {
+      patch.whatsapp_access_token = accessToken.trim();
     }
-    if (parsed.data.whatsapp_access_token !== undefined) {
-      patch.whatsapp_access_token = parsed.data.whatsapp_access_token || null;
-    }
-    if (parsed.data.whatsapp_business_account_id !== undefined) {
-      patch.whatsapp_business_account_id = parsed.data.whatsapp_business_account_id || null;
-    }
+
     const { error } = await supabase.from("salons").update(patch).eq("id", salon.id);
     if (error) {
       return { error: error.message };

@@ -53,6 +53,7 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # Copy migrations runner and database schema definitions
 COPY --from=builder --chown=nextjs:nodejs /app/run-migrations.js ./run-migrations.js
 COPY --from=builder --chown=nextjs:nodejs /app/supabase ./supabase
+COPY --from=builder --chown=nextjs:nodejs /app/start.js ./start.js
 
 USER nextjs
 
@@ -60,5 +61,5 @@ EXPOSE 3000
 ENV PORT 3000
 ENV HOSTNAME "0.0.0.0"
 
-# server.js is created automatically when "standalone" output is enabled
-CMD ["sh", "-c", "node run-migrations.js && node server.js"]
+# Bootstrap runner triggers migrations then boots next.js standalone server
+CMD ["node", "start.js"]

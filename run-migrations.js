@@ -8,29 +8,30 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 
-const rawConnectionString = process.env.DATABASE_URL;
-
-if (!rawConnectionString) {
-  console.log('[Migration] No DATABASE_URL found. Skipping migrations.');
-  process.exit(0);
-}
-
-// Strip sslmode from the URL to let our explicit ssl config take action
-const connectionString = rawConnectionString.replace(/[?&]sslmode=[^&]*/g, (match) => {
-  const isQuery = match.startsWith('?');
-  return isQuery ? '?' : '';
-}).replace(/\?$/, '');
-
-const pool = new Pool({
-  connectionString,
-  ssl: connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
-    ? false
-    : { rejectUnauthorized: false },
-});
-
 async function run() {
-  const client = await pool.connect();
+  const rawConnectionString = process.env.DATABASE_URL;
+
+  if (!rawConnectionString) {
+    console.log('[Migration] No DATABASE_URL found. Skipping migrations.');
+    return;
+  }
+
+  // Strip sslmode from the URL to let our explicit ssl config take action
+  const connectionString = rawConnectionString.replace(/[?&]sslmode=[^&]*/g, (match) => {
+    const isQuery = match.startsWith('?');
+    return isQuery ? '?' : '';
+  }).replace(/\?$/, '');
+
+  const pool = new Pool({
+    connectionString,
+    ssl: connectionString.includes('localhost') || connectionString.includes('127.0.0.1')
+      ? false
+      : { rejectUnauthorized: false },
+  });
+
+  let client;
   try {
+    client = await pool.connect();
     console.log('[Migration] Checking database schema...');
 
     // 1. Create tracking table
@@ -83,13 +84,15 @@ async function run() {
   } catch (err) {
     console.error('[Migration] Failed to run database migrations:', err);
     console.log('[Migration] Continuing application startup despite migration failure.');
-    process.exit(0);
   } finally {
     if (client) client.release();
     await pool.end();
-    console.log('[Migration] Migration runner finished. Handing over to application...');
-    process.exit(0);
   }
 }
 
-run();
+// Support both direct execution and module import
+if (require.main === module) {
+  run();
+}
+
+module.exports = run;

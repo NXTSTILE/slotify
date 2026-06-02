@@ -19,17 +19,40 @@ export default async function DashboardHomePage() {
     redirect("/login");
   }
 
+  let salon: any = null;
+
   try {
     // 2. Fetch salon details
     const salonRes = await db.query(
       "SELECT id, name FROM public.salons WHERE owner_id = $1 LIMIT 1",
       [session.userId]
     );
-    const salon = salonRes.rows[0];
-    if (!salon) {
-      redirect("/setup");
-    }
+    salon = salonRes.rows[0];
+  } catch (error: any) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto my-10 bg-destructive/10 border border-destructive text-destructive rounded-lg space-y-4">
+        <h2 className="text-xl font-bold">Server-Side Exception Captured</h2>
+        <p className="font-semibold text-sm">This diagnostic screen is displayed to assist in identifying issues in the live environment.</p>
+        <div className="bg-background text-foreground p-4 rounded border font-mono text-xs overflow-auto max-h-96">
+          <p className="font-bold">Error Message:</p>
+          <p className="mb-4">{error.message}</p>
+          {error.stack && (
+            <>
+              <p className="font-bold">Stack Trace:</p>
+              <pre className="whitespace-pre-wrap">{error.stack}</pre>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
+  // Perform redirect strictly OUTSIDE the try/catch block
+  if (!salon) {
+    redirect("/setup");
+  }
+
+  try {
     const start = new Date();
     const dayStart = format(toZonedTime(start, SALON_TIMEZONE), "yyyy-MM-dd");
     const zStart = new Date(`${dayStart}T00:00:00+05:30`).toISOString();

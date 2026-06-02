@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { decrypt } from "@/lib/auth";
+import { decrypt } from "@/lib/jwt";
 
 /**
  * Global application middleware to guard routes and protect dashboard actions.

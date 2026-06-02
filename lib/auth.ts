@@ -1,47 +1,13 @@
-import { SignJWT, jwtVerify } from 'jose';
+import { cookies } from 'next/headers';
+import { encrypt, decrypt, type UserSession } from './jwt';
 
-const secretKey = process.env.JWT_SECRET || 'nxtstile_default_jwt_secret_must_be_overridden_in_production_for_security';
-const key = new TextEncoder().encode(secretKey);
-
-export interface UserSession {
-  userId: string;
-  email: string;
-}
-
-/**
- * Encrypts a user session payload into a signed JWT.
- */
-export async function encrypt(payload: UserSession): Promise<string> {
-  return await new SignJWT({ ...payload })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setIssuedAt()
-    .setExpirationTime('7d')
-    .sign(key);
-}
-
-/**
- * Decrypts and verifies a session token. Returns null if invalid or expired.
- */
-export async function decrypt(input: string): Promise<UserSession | null> {
-  try {
-    const { payload } = await jwtVerify(input, key, {
-      algorithms: ['HS256'],
-    });
-    return {
-      userId: payload.userId as string,
-      email: payload.email as string,
-    };
-  } catch (err) {
-    return null;
-  }
-}
+export type { UserSession };
 
 /**
  * Retrieves the currently logged-in user session from the cookie store.
  */
 export async function getSession(): Promise<UserSession | null> {
-  const { cookies } = await import('next/headers');
-  const cookieStore = await cookies();
+  const cookieStore = cookies();
   const sessionCookie = cookieStore.get('session')?.value;
   if (!sessionCookie) return null;
   return await decrypt(sessionCookie);
@@ -53,8 +19,7 @@ export async function getSession(): Promise<UserSession | null> {
 export async function setSessionCookie(userId: string, email: string) {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
   const token = await encrypt({ userId, email });
-  const { cookies } = await import('next/headers');
-  const cookieStore = await cookies();
+  const cookieStore = cookies();
   
   cookieStore.set('session', token, {
     httpOnly: true,
@@ -69,8 +34,7 @@ export async function setSessionCookie(userId: string, email: string) {
  * Deletes the session cookie to log the user out.
  */
 export async function deleteSessionCookie() {
-  const { cookies } = await import('next/headers');
-  const cookieStore = await cookies();
+  const cookieStore = cookies();
   cookieStore.set('session', '', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',

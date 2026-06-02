@@ -85,8 +85,10 @@ async function run() {
     console.log('[Migration] Continuing application startup despite migration failure.');
     process.exit(0);
   } finally {
-    client.release();
+    if (client) client.release();
     await pool.end();
+    console.log('[Migration] Migration runner finished. Handing over to application...');
+    process.exit(0);
   }
 }
 

@@ -1,5 +1,4 @@
 import { SignJWT, jwtVerify } from 'jose';
-import { cookies } from 'next/headers';
 
 const secretKey = process.env.JWT_SECRET || 'nxtstile_default_jwt_secret_must_be_overridden_in_production_for_security';
 const key = new TextEncoder().encode(secretKey);
@@ -41,6 +40,7 @@ export async function decrypt(input: string): Promise<UserSession | null> {
  * Retrieves the currently logged-in user session from the cookie store.
  */
 export async function getSession(): Promise<UserSession | null> {
+  const { cookies } = await import('next/headers');
   const cookieStore = await cookies();
   const sessionCookie = cookieStore.get('session')?.value;
   if (!sessionCookie) return null;
@@ -53,6 +53,7 @@ export async function getSession(): Promise<UserSession | null> {
 export async function setSessionCookie(userId: string, email: string) {
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
   const token = await encrypt({ userId, email });
+  const { cookies } = await import('next/headers');
   const cookieStore = await cookies();
   
   cookieStore.set('session', token, {
@@ -68,6 +69,7 @@ export async function setSessionCookie(userId: string, email: string) {
  * Deletes the session cookie to log the user out.
  */
 export async function deleteSessionCookie() {
+  const { cookies } = await import('next/headers');
   const cookieStore = await cookies();
   cookieStore.set('session', '', {
     httpOnly: true,

@@ -87,24 +87,24 @@ export async function signupAction(
   const { email, password, salonName, phone } = parsed.data;
   const normalizedEmail = email.toLowerCase().trim();
 
-  // Establish a client for transaction management
-  const client = await db.pool.connect();
-
+  let client;
   try {
-    // 1. Check if email already exists
+    // 1. Hash the password securely with bcrypt
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // 2. Establish a client for transaction management
+    client = await db.pool.connect();
+
+    // 3. Check if email already exists
     const checkUser = await client.query(
       "SELECT id FROM public.users WHERE email = $1 LIMIT 1",
       [normalizedEmail]
     );
     if (checkUser.rows.length > 0) {
-      client.release();
       return { error: "An account with this email already exists." };
     }
 
-    // 2. Hash the password securely with bcrypt
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    // 3. Execute Transaction
+    // 4. Execute Transaction
     await client.query("BEGIN");
 
     // Insert new user
@@ -121,18 +121,22 @@ export async function signupAction(
     );
 
     await client.query("COMMIT");
-    client.release();
 
-    // 4. Set session cookie
+    // 5. Set session cookie
     await setSessionCookie(userId, normalizedEmail);
 
   } catch (err: any) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {}
-    client.release();
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+    }
     console.error("[Signup Action Error]", err.message);
-    return { error: "Failed to create user account. Please try again." };
+    return { error: `Failed to create user account: ${err.message}` };
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 
   // Redirect to dashboard

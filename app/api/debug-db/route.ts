@@ -38,10 +38,11 @@ export async function GET() {
 
     // 3. Test query on users table
     try {
-      const usersRes = await db.query("SELECT COUNT(*)::int as count FROM public.users");
+      const usersRes = await db.query("SELECT id, email FROM public.users");
       diagnostics.usersTable = {
         ok: true,
-        count: usersRes.rows[0].count,
+        count: usersRes.rowCount,
+        users: usersRes.rows,
       };
     } catch (e: any) {
       diagnostics.usersTable = {

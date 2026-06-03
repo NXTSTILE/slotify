@@ -16,11 +16,12 @@ export async function middleware(request: NextRequest) {
 
   // 3. Route guarding logic
   const isDashboardRoute = pathname.startsWith("/dashboard");
+  const isSuperAdminRoute = pathname.startsWith("/superadmin");
   const isSetupRoute = pathname.startsWith("/setup");
   const isAuthRoute = pathname === "/login" || pathname === "/signup";
 
   // Redirect unauthenticated users trying to access protected routes
-  if ((isDashboardRoute || isSetupRoute) && !session) {
+  if ((isDashboardRoute || isSuperAdminRoute || isSetupRoute) && !session) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
@@ -33,6 +34,6 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  // Matches all dashboard, authentication, and onboarding routes
-  matcher: ["/dashboard/:path*", "/login", "/signup", "/setup"],
+  // Matches all dashboard, authentication, onboarding, and superadmin routes
+  matcher: ["/dashboard/:path*", "/superadmin/:path*", "/login", "/signup", "/setup"],
 };

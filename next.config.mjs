@@ -36,6 +36,9 @@ const nextConfig = {
   // Silence noisy build warnings from Supabase realtime
   experimental: {
     serverComponentsExternalPackages: [],
+    serverActions: {
+      allowedOrigins: ["nxstile.in", "www.nxstile.in"],
+    },
   },
 
   // Webpack: silence "Critical dependency" warnings from date-fns-tz

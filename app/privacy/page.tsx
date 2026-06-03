@@ -25,7 +25,7 @@ export default function PrivacyPolicyPage() {
 
           <div className="prose prose-neutral dark:prose-invert max-w-none space-y-6 text-foreground/90 leading-relaxed">
             <p>
-              Welcome to <strong>Nxtstile</strong> ("we", "our", "us"). Nxtstile is a multi-tenant Scheduling Software as a Service (SaaS) designed to help independent salons in India manage appointments seamlessly, utilizing automated WhatsApp-based interactions.
+              Welcome to <strong>Nxtstile</strong> (&quot;we&quot;, &quot;our&quot;, &quot;us&quot;). Nxtstile is a multi-tenant Scheduling Software as a Service (SaaS) designed to help independent salons in India manage appointments seamlessly, utilizing automated WhatsApp-based interactions.
             </p>
             <p>
               This Privacy Policy explains how we collect, use, disclose, and safeguard your information when you visit our website at <a href="https://www.nxtstile.in" className="text-primary underline font-medium">www.nxtstile.in</a>, use our SaaS dashboard, or interact with our automated WhatsApp scheduling bot.
@@ -67,7 +67,7 @@ export default function PrivacyPolicyPage() {
                 <strong>Database & Infrastructure Providers:</strong> Our database and auth services are hosted via Supabase (PostgreSQL database).
               </li>
               <li>
-                <strong>Communications Platforms:</strong> Outbound booking confirmations and reminders are routed through Meta's official WhatsApp Business API endpoints.
+                <strong>Communications Platforms:</strong> Outbound booking confirmations and reminders are routed through Meta&apos;s official WhatsApp Business API endpoints.
               </li>
               <li>
                 <strong>Compliance with Law:</strong> We may disclose information if required to do so by applicable laws, regulations, or court orders.
@@ -86,7 +86,7 @@ export default function PrivacyPolicyPage() {
 
             <h2 className="text-2xl font-bold mt-8 border-b pb-2">6. Changes to This Privacy Policy</h2>
             <p>
-              We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page and updating the "Last updated" date at the top of this document.
+              We may update this Privacy Policy from time to time. We will notify you of any changes by posting the new Privacy Policy on this page and updating the &quot;Last updated&quot; date at the top of this document.
             </p>
 
             <h2 className="text-2xl font-bold mt-8 border-b pb-2">7. Contact Us</h2>

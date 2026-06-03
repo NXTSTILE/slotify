@@ -25,7 +25,7 @@ export default function TermsOfServicePage() {
 
           <div className="prose prose-neutral dark:prose-invert max-w-none space-y-6 text-foreground/90 leading-relaxed">
             <p>
-              Please read these Terms of Service ("Terms", "Agreement") carefully before using the <a href="https://www.nxtstile.in" className="text-primary underline font-medium">www.nxtstile.in</a> website and the scheduling software services (the "Service") operated by <strong>Nxtstile</strong> ("us", "we", "our").
+              Please read these Terms of Service (&quot;Terms&quot;, &quot;Agreement&quot;) carefully before using the <a href="https://www.nxtstile.in" className="text-primary underline font-medium">www.nxtstile.in</a> website and the scheduling software services (the &quot;Service&quot;) operated by <strong>Nxtstile</strong> (&quot;us&quot;, &quot;we&quot;, &quot;our&quot;).
             </p>
             <p>
               By accessing or using the Service, you agree to be bound by these Terms. If you disagree with any part of the terms, you may not access the Service.
@@ -80,7 +80,7 @@ export default function TermsOfServicePage() {
 
             <h2 className="text-2xl font-bold mt-8 border-b pb-2">9. Changes to Terms</h2>
             <p>
-              We reserve the right, at our sole discretion, to modify or replace these Terms at any time. If a revision is material, we will provide at least 30 days' notice prior to any new terms taking effect.
+              We reserve the right, at our sole discretion, to modify or replace these Terms at any time. If a revision is material, we will provide at least 30 days&apos; notice prior to any new terms taking effect.
             </p>
 
             <h2 className="text-2xl font-bold mt-8 border-b pb-2">10. Contact Us</h2>

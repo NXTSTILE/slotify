@@ -48,7 +48,7 @@ export default function DataDeletionPage() {
 
             <h2 className="text-2xl font-bold mt-8 border-b pb-2">2. For Salon Customers (End Users)</h2>
             <p>
-              If you have interacted with a salon's WhatsApp bot powered by Nxtstile, we store:
+              If you have interacted with a salon&apos;s WhatsApp bot powered by Nxtstile, we store:
             </p>
             <ul className="list-disc pl-6 space-y-2">
               <li>Your WhatsApp telephone number and name (provided during scheduling).</li>

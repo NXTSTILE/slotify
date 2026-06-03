@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const [users, salons, services, workingHours, customers, appointments, conversationStates] = await Promise.all([
+    const [users, salons, services, workingHours, customers, appointments, conversationStates, webhookLogs] = await Promise.all([
       db.query("SELECT id, email, is_super_admin, created_at FROM public.users ORDER BY created_at"),
       db.query("SELECT id, name, phone, owner_id, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL AND whatsapp_access_token != '') as has_token FROM public.salons"),
       db.query("SELECT id, salon_id, name, price, duration_minutes, is_active FROM public.services ORDER BY salon_id"),
@@ -19,6 +19,7 @@ export async function GET(request: Request) {
       db.query("SELECT id, salon_id, phone, name FROM public.customers ORDER BY created_at DESC LIMIT 10"),
       db.query("SELECT id, salon_id, status, start_time, total_price FROM public.appointments ORDER BY created_at DESC LIMIT 10"),
       db.query("SELECT salon_id, customer_phone, state, updated_at FROM public.conversation_states ORDER BY updated_at DESC LIMIT 10"),
+      db.query("SELECT id, received_at, headers, body, error FROM public.webhook_logs ORDER BY received_at DESC LIMIT 15"),
     ]);
 
     return NextResponse.json({
@@ -29,6 +30,7 @@ export async function GET(request: Request) {
       recentCustomers: customers.rows,
       recentAppointments: appointments.rows,
       conversationStates: conversationStates.rows,
+      webhookLogs: webhookLogs.rows,
     }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

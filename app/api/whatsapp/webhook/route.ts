@@ -73,15 +73,36 @@ export async function POST(request: Request) {
   const signature = request.headers.get("X-Hub-Signature-256");
   const secret = process.env.WHATSAPP_APP_SECRET;
 
+  const headersObj: Record<string, string> = {};
+  request.headers.forEach((value, key) => {
+    headersObj[key] = value;
+  });
+
+  let logId: string | null = null;
+  try {
+    const insertRes = await db.query(
+      "INSERT INTO public.webhook_logs (headers, body) VALUES ($1, $2) RETURNING id",
+      [JSON.stringify(headersObj), rawBody]
+    );
+    logId = insertRes.rows[0]?.id || null;
+  } catch (dbErr: any) {
+    console.error("[webhook POST] failed to log raw request to DB:", dbErr.message);
+  }
+
   console.log("[webhook POST] received", {
     hasSignature: !!signature,
     hasSecret: !!secret,
     bodyLength: rawBody.length,
     bodyPreview: rawBody.slice(0, 200),
+    logId,
   });
 
   if (!secret) {
-    console.error("[webhook] WHATSAPP_APP_SECRET not set");
+    const errMsg = "WHATSAPP_APP_SECRET not set";
+    console.error("[webhook]", errMsg);
+    if (logId) {
+      await db.query("UPDATE public.webhook_logs SET error = $1 WHERE id = $2", [errMsg, logId]).catch(() => {});
+    }
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 
@@ -89,7 +110,11 @@ export async function POST(request: Request) {
   console.log("[webhook POST] signature valid:", signatureValid);
 
   if (!signatureValid) {
-    console.error("[webhook] signature mismatch - rejecting request");
+    const errMsg = `signature mismatch - signature headers: ${signature}`;
+    console.error("[webhook]", errMsg);
+    if (logId) {
+      await db.query("UPDATE public.webhook_logs SET error = $1 WHERE id = $2", [errMsg, logId]).catch(() => {});
+    }
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -98,26 +123,31 @@ export async function POST(request: Request) {
     payload = JSON.parse(rawBody) as { entry?: WaGraphEntry[] };
     console.log("[webhook POST] parsed payload entries:", payload.entry?.length ?? 0);
   } catch {
-    console.error("[webhook POST] failed to parse JSON body");
+    const errMsg = "failed to parse JSON body";
+    console.error("[webhook POST]", errMsg);
+    if (logId) {
+      await db.query("UPDATE public.webhook_logs SET error = $1 WHERE id = $2", [errMsg, logId]).catch(() => {});
+    }
     return NextResponse.json({ ok: true }, { status: 200 });
   }
 
   // Process synchronously so logs appear before response
-  void processPayload(payload).catch((e) =>
+  void processPayload(payload, logId).catch((e) =>
     console.error("[webhook] async process failed", e)
   );
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
 
-async function processPayload(payload: { entry?: WaGraphEntry[] }) {
+async function processPayload(payload: { entry?: WaGraphEntry[] }, logId: string | null) {
+  const errors: string[] = [];
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const phoneNumberId = change.value?.metadata?.phone_number_id;
       console.log("[webhook processPayload] phone_number_id from Meta:", phoneNumberId);
 
       if (!phoneNumberId) {
-        console.warn("[webhook] no phone_number_id in change metadata");
+        errors.push("no phone_number_id in change metadata");
         continue;
       }
 
@@ -129,8 +159,10 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }) {
 
         const salon = result.rows[0];
         if (!salon) {
-          console.warn("[webhook] No salon found for phone_number_id:", phoneNumberId);
-          // Log all salons for diagnosis
+          const warnMsg = `No salon found for phone_number_id: ${phoneNumberId}`;
+          console.warn("[webhook]", warnMsg);
+          errors.push(warnMsg);
+          
           const allSalons = await db.query("SELECT id, name, whatsapp_phone_number_id FROM public.salons");
           console.warn("[webhook] All salons in DB:", JSON.stringify(allSalons.rows));
           continue;
@@ -145,7 +177,7 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }) {
           console.log("[webhook] processing message type:", msg.type, "from:", msg.from);
           const parsed = parseIncoming(msg);
           if (!parsed) {
-            console.warn("[webhook] could not parse message:", JSON.stringify(msg));
+            errors.push(`could not parse message of type ${msg.type}`);
             continue;
           }
 
@@ -153,13 +185,19 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }) {
           try {
             await handleConversationMessage(salon.id, from, parsed);
             console.log("[webhook] conversation handled successfully for:", from);
-          } catch (e) {
+          } catch (e: any) {
             console.error("[webhook] conversation error", e);
+            errors.push(`conversation error for ${from}: ${e.message}`);
           }
         }
       } catch (err: any) {
         console.error("[webhook] database error during processing", err.message);
+        errors.push(`database error: ${err.message}`);
       }
     }
+  }
+
+  if (errors.length > 0 && logId) {
+    await db.query("UPDATE public.webhook_logs SET error = $1 WHERE id = $2", [errors.join("; "), logId]).catch(() => {});
   }
 }

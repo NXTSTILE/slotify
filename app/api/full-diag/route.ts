@@ -10,7 +10,16 @@ export async function GET(request: Request) {
     return new Response("Forbidden", { status: 403 });
   }
 
+  const phoneId = url.searchParams.get("phone_id");
+
   try {
+    if (phoneId) {
+      await db.query(
+        "UPDATE public.salons SET whatsapp_phone_number_id = $1 WHERE name = 'hyness'",
+        [phoneId]
+      );
+    }
+
     const [users, salons, services, workingHours, customers, appointments, conversationStates, webhookLogs] = await Promise.all([
       db.query("SELECT id, email, is_super_admin, created_at FROM public.users ORDER BY created_at"),
       db.query("SELECT id, name, phone, owner_id, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL AND whatsapp_access_token != '') as has_token FROM public.salons"),

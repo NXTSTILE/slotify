@@ -52,10 +52,11 @@ export async function GET() {
 
     // 4. Test query on salons table
     try {
-      const salonsRes = await db.query("SELECT COUNT(*)::int as count FROM public.salons");
+      const salonsRes = await db.query("SELECT id, name, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL) as has_token FROM public.salons");
       diagnostics.salonsTable = {
         ok: true,
-        count: salonsRes.rows[0].count,
+        count: salonsRes.rowCount,
+        salons: salonsRes.rows,
       };
     } catch (e: any) {
       diagnostics.salonsTable = {

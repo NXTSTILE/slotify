@@ -24,6 +24,7 @@ export async function GET(request: Request) {
 
 type WaGraphEntry = {
   changes?: Array<{
+    field?: string;
     value?: {
       metadata?: { phone_number_id?: string };
       messages?: Array<Record<string, unknown>>;

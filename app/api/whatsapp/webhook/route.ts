@@ -143,6 +143,11 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }, logId: string
   const errors: string[] = [];
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
+      if (change.field !== "messages") {
+        console.log(`[webhook processPayload] skipping non-message field: ${change.field}`);
+        continue;
+      }
+      
       const phoneNumberId = change.value?.metadata?.phone_number_id;
       console.log("[webhook processPayload] phone_number_id from Meta:", phoneNumberId);
 

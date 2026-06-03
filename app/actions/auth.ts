@@ -33,7 +33,7 @@ export async function loginAction(
   try {
     // 1. Fetch user from custom PostgreSQL users table
     const result = await db.query(
-      "SELECT id, email, password_hash FROM public.users WHERE email = $1 LIMIT 1",
+      "SELECT id, email, password_hash, is_super_admin FROM public.users WHERE email = $1 LIMIT 1",
       [email.toLowerCase().trim()]
     );
 
@@ -50,6 +50,11 @@ export async function loginAction(
 
     // 3. Set the encrypted HTTP-only session cookie
     await setSessionCookie(user.id, user.email);
+
+    // 4. Check if user is a super admin to redirect accordingly
+    if (user.is_super_admin) {
+      redirect("/superadmin");
+    }
 
   } catch (err: any) {
     console.error("[Login Action Error]", err.message);

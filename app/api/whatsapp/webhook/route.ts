@@ -73,27 +73,39 @@ export async function POST(request: Request) {
   const signature = request.headers.get("X-Hub-Signature-256");
   const secret = process.env.WHATSAPP_APP_SECRET;
 
+  console.log("[webhook POST] received", {
+    hasSignature: !!signature,
+    hasSecret: !!secret,
+    bodyLength: rawBody.length,
+    bodyPreview: rawBody.slice(0, 200),
+  });
+
   if (!secret) {
     console.error("[webhook] WHATSAPP_APP_SECRET not set");
     return NextResponse.json({ ok: false }, { status: 500 });
   }
 
-  if (!verifyWebhookSignature(rawBody, signature, secret)) {
+  const signatureValid = verifyWebhookSignature(rawBody, signature, secret);
+  console.log("[webhook POST] signature valid:", signatureValid);
+
+  if (!signatureValid) {
+    console.error("[webhook] signature mismatch - rejecting request");
     return new Response("Forbidden", { status: 403 });
   }
 
   let payload: { entry?: WaGraphEntry[] };
   try {
     payload = JSON.parse(rawBody) as { entry?: WaGraphEntry[] };
+    console.log("[webhook POST] parsed payload entries:", payload.entry?.length ?? 0);
   } catch {
+    console.error("[webhook POST] failed to parse JSON body");
     return NextResponse.json({ ok: true }, { status: 200 });
   }
 
-  queueMicrotask(() => {
-    void processPayload(payload).catch((e) =>
-      console.error("[webhook] async process failed", e)
-    );
-  });
+  // Process synchronously so logs appear before response
+  void processPayload(payload).catch((e) =>
+    console.error("[webhook] async process failed", e)
+  );
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
@@ -102,27 +114,45 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }) {
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const phoneNumberId = change.value?.metadata?.phone_number_id;
-      if (!phoneNumberId) continue;
+      console.log("[webhook processPayload] phone_number_id from Meta:", phoneNumberId);
+
+      if (!phoneNumberId) {
+        console.warn("[webhook] no phone_number_id in change metadata");
+        continue;
+      }
 
       try {
         const result = await db.query(
-          "SELECT id FROM public.salons WHERE whatsapp_phone_number_id = $1 LIMIT 1",
+          "SELECT id, name FROM public.salons WHERE whatsapp_phone_number_id = $1 LIMIT 1",
           [phoneNumberId]
         );
 
         const salon = result.rows[0];
         if (!salon) {
-          console.warn("[webhook] No salon for phone_number_id", phoneNumberId);
+          console.warn("[webhook] No salon found for phone_number_id:", phoneNumberId);
+          // Log all salons for diagnosis
+          const allSalons = await db.query("SELECT id, name, whatsapp_phone_number_id FROM public.salons");
+          console.warn("[webhook] All salons in DB:", JSON.stringify(allSalons.rows));
           continue;
         }
 
-        for (const msg of change.value?.messages ?? []) {
+        console.log("[webhook] matched salon:", salon.name, salon.id);
+
+        const messages = change.value?.messages ?? [];
+        console.log("[webhook] messages in payload:", messages.length);
+
+        for (const msg of messages) {
+          console.log("[webhook] processing message type:", msg.type, "from:", msg.from);
           const parsed = parseIncoming(msg);
-          if (!parsed) continue;
+          if (!parsed) {
+            console.warn("[webhook] could not parse message:", JSON.stringify(msg));
+            continue;
+          }
 
           const from = (msg.from as string) ?? "";
           try {
             await handleConversationMessage(salon.id, from, parsed);
+            console.log("[webhook] conversation handled successfully for:", from);
           } catch (e) {
             console.error("[webhook] conversation error", e);
           }

@@ -29,6 +29,7 @@ export async function loginAction(
   }
 
   const { email, password } = parsed.data;
+  let isSuperAdmin = false;
 
   try {
     // 1. Fetch user from custom PostgreSQL users table
@@ -51,10 +52,8 @@ export async function loginAction(
     // 3. Set the encrypted HTTP-only session cookie
     await setSessionCookie(user.id, user.email);
 
-    // 4. Check if user is a super admin to redirect accordingly
-    if (user.is_super_admin) {
-      redirect("/superadmin");
-    }
+    // 4. Store flag — redirect MUST happen outside try/catch in Next.js
+    isSuperAdmin = !!user.is_super_admin;
 
   } catch (err: any) {
     console.error("[Login Action Error]", err.message);
@@ -62,6 +61,9 @@ export async function loginAction(
   }
 
   // Next.js redirect must be called outside try/catch blocks
+  if (isSuperAdmin) {
+    redirect("/superadmin");
+  }
   redirect("/dashboard");
 }
 

@@ -9,3 +9,10 @@ export const MAX_BOOKING_DAYS_AHEAD = 14;
 
 /** Same-day bookings must be at least this many hours from now */
 export const SAME_DAY_MIN_LEAD_HOURS = 24;
+
+/**
+ * Minimum minutes between "now" and the assigned slot start for WhatsApp bot bookings.
+ * Ensures the customer has time to physically travel to the salon.
+ * Walk-in / manager bookings are NOT subject to this restriction.
+ */
+export const CUSTOMER_TRAVEL_BUFFER_MINUTES = 15;

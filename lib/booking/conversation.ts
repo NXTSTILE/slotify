@@ -1,7 +1,11 @@
 import { addMinutes, format, parseISO } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 import { z } from "zod";
-import { APPOINTMENT_BUFFER_MINUTES, SALON_TIMEZONE } from "@/lib/constants";
+import {
+  APPOINTMENT_BUFFER_MINUTES,
+  CUSTOMER_TRAVEL_BUFFER_MINUTES,
+  SALON_TIMEZONE,
+} from "@/lib/constants";
 import { normalizeCustomerPhone } from "@/lib/booking/phone";
 import { db } from "@/lib/db";
 import {
@@ -22,6 +26,7 @@ const CtxSchema = z.object({
   serviceIds: z.array(z.string().uuid()).optional(),
   selectedDayIso: z.string().optional(),
   selectedSession: z.string().optional(), // "morning" | "evening"
+  gender: z.enum(["male", "female"]).optional(), // selected by customer at greeting
   slotStarts: z.array(z.string()).optional(),
   selectedSlotIndex: z.number().int().optional(),
   pendingCancelAppointmentId: z.string().uuid().optional(),
@@ -298,11 +303,11 @@ export async function handleConversationMessage(
   const kw = tokenizeKeywords(userText);
 
   // ── GREETING RESET ─────────────────────────────────────────────────────────
-  // Any greeting resets conversation to the welcome menu, releasing frozen slots.
+  // Any greeting resets conversation to gender selection, releasing frozen slots.
   if (incoming.kind === "text" && isGreeting(userText)) {
     await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
-    await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-    await sendWelcomeMenu(salon, customerPhone);
+    await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
+    await sendGenderMenu(salon, customerPhone);
     return;
   }
 
@@ -502,8 +507,8 @@ export async function handleConversationMessage(
         })
       );
     } else {
-      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-      await sendWelcomeMenu(salon, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
+      await sendGenderMenu(salon, customerPhone);
     }
     return;
   }
@@ -512,6 +517,9 @@ export async function handleConversationMessage(
   switch (state) {
     case "IDLE":
       await handleIdleInput(salon, customerPhone, userText, incoming, ctx);
+      return;
+    case "SELECTING_GENDER":
+      await handleSelectingGender(salon, customerPhone, incoming, ctx);
       return;
     case "SELECTING_DATE":
       await handleSelectingDate(salon, customerPhone, userText, incoming, ctx);
@@ -527,8 +535,8 @@ export async function handleConversationMessage(
       return;
     default:
       await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
-      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-      await sendWelcomeMenu(salon, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
+      await sendGenderMenu(salon, customerPhone);
   }
 }
 
@@ -537,16 +545,34 @@ export async function handleConversationMessage(
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sends the welcome menu with Book Appointment and Check Services buttons.
+ * Sends the gender selection prompt. This is the first step after every greeting.
  */
-async function sendWelcomeMenu(salon: SalonRow, customerPhone: string) {
+async function sendGenderMenu(salon: SalonRow, customerPhone: string) {
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `👋 Welcome to *${salon.name}*!\n\nWhat would you like to do?`,
+      bodyText: `👋 Welcome to *${salon.name}*!\n\nTo show you the right services, are you booking for:`,
+      buttons: [
+        { id: "btn_male", title: "👨 Male" },
+        { id: "btn_female", title: "👩 Female" },
+      ],
+    })
+  );
+}
+
+/**
+ * Sends the main menu with Book Appointment and Check Services buttons.
+ * Called after gender has been selected.
+ */
+async function sendWelcomeMenu(salon: SalonRow, customerPhone: string, gender: "male" | "female") {
+  const genderLabel = gender === "male" ? "Male" : "Female";
+  await sendAuth(salon, (pid, tok) =>
+    sendWhatsAppButtons(pid, tok, {
+      toE164: customerPhone,
+      bodyText: `Great! What would you like to do?`,
       buttons: [
         { id: "btn_book", title: "📅 Book Appointment" },
-        { id: "btn_services", title: "💇 Services & Prices" },
+        { id: "btn_services", title: `💇 ${genderLabel} Services` },
       ],
     })
   );
@@ -568,12 +594,26 @@ async function sendDateMenu(salon: SalonRow, customerPhone: string) {
   );
 }
 
-async function sendServiceCatalog(salon: SalonRow, to: string) {
-  const res = await db.query(
-    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
-    [salon.id]
-  );
-  
+async function sendServiceCatalog(salon: SalonRow, to: string, gender?: "male" | "female") {
+  let query: string;
+  let params: unknown[];
+
+  if (gender) {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true AND (gender_tag = $2 OR gender_tag = 'unisex') " +
+      "ORDER BY display_order ASC";
+    params = [salon.id, gender];
+  } else {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC";
+    params = [salon.id];
+  }
+
+  const res = await db.query(query, params);
+
+  const genderLabel = gender ? ` (${gender === "male" ? "Male" : "Female"} & Unisex)` : "";
   const lines = res.rows.map(
     (s) => `• ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
   );
@@ -581,7 +621,7 @@ async function sendServiceCatalog(salon: SalonRow, to: string) {
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: to,
-      body: `*Services & Prices*\n${lines.length ? lines.join("\n") : "No services yet."}`,
+      body: `*Services & Prices${genderLabel}*\n${lines.length ? lines.join("\n") : "No services yet."}`,
     })
   );
 }
@@ -613,7 +653,7 @@ async function sendWorkingHoursSummary(salon: SalonRow, to: string) {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * IDLE: User tapped Book or Services from the welcome menu.
+ * IDLE: Fallback if user is in IDLE without a gender set — redirect to gender selection.
  */
 async function handleIdleInput(
   salon: SalonRow,
@@ -625,19 +665,54 @@ async function handleIdleInput(
   const id = incoming.kind === "interactive" ? incoming.id : "";
 
   if (id === "btn_services") {
-    await sendServiceCatalog(salon, customerPhone);
-    // Stay in IDLE so they can still tap Book
+    await sendServiceCatalog(salon, customerPhone, ctx.gender);
     return;
   }
 
   if (id === "btn_book" || userText.toUpperCase() === "BOOK") {
-    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {});
-    await sendDateMenu(salon, customerPhone);
+    if (ctx.gender) {
+      await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", { gender: ctx.gender });
+      await sendDateMenu(salon, customerPhone);
+    } else {
+      await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
+      await sendGenderMenu(salon, customerPhone);
+    }
     return;
   }
 
-  // Unknown input in IDLE — re-show the menu
-  await sendWelcomeMenu(salon, customerPhone);
+  // Unknown input in IDLE — re-prompt gender selection
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
+  await sendGenderMenu(salon, customerPhone);
+}
+
+/**
+ * SELECTING_GENDER: Customer picks Male or Female.
+ * After selection, shows the main menu (Book / Services).
+ */
+async function handleSelectingGender(
+  salon: SalonRow,
+  customerPhone: string,
+  incoming: IncomingParsed,
+  ctx: Ctx
+) {
+  let gender: "male" | "female" | null = null;
+
+  if (incoming.kind === "interactive") {
+    if (incoming.id === "btn_male") gender = "male";
+    else if (incoming.id === "btn_female") gender = "female";
+  } else if (incoming.kind === "text") {
+    const t = incoming.body.trim().toLowerCase();
+    if (t === "male" || t === "m") gender = "male";
+    else if (t === "female" || t === "f") gender = "female";
+  }
+
+  if (!gender) {
+    await sendGenderMenu(salon, customerPhone);
+    return;
+  }
+
+  await ensureConversationRow(salon.id, customerPhone, "IDLE", { gender });
+  await sendWelcomeMenu(salon, customerPhone, gender);
 }
 
 /**
@@ -796,21 +871,38 @@ async function handleSelectingSession(
     serviceIds: [],
   });
 
-  await sendServicesMenu(salon, customerPhone);
+  await sendServicesMenu(salon, customerPhone, [], ctx.gender);
 }
 
 /**
  * Sends the services selection menu, optionally showing already-selected services.
+ * Filters by gender (male/female) — always includes unisex services.
+ * Includes a "✅ Confirm My Selection" row at the bottom so customers can
+ * select multiple services and confirm — all from the same list without extra prompts.
  */
 async function sendServicesMenu(
   salon: SalonRow,
   customerPhone: string,
-  alreadySelectedIds: string[] = []
+  alreadySelectedIds: string[] = [],
+  gender?: "male" | "female"
 ) {
-  const res = await db.query(
-    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
-    [salon.id]
-  );
+  let query: string;
+  let params: unknown[];
+
+  if (gender) {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true AND (gender_tag = $2 OR gender_tag = 'unisex') " +
+      "ORDER BY display_order ASC";
+    params = [salon.id, gender];
+  } else {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC";
+    params = [salon.id];
+  }
+
+  const res = await db.query(query, params);
   const services = res.rows;
 
   if (!services.length) {
@@ -824,19 +916,33 @@ async function sendServicesMenu(
   }
 
   const catalog = services
-    .map(
-      (s, i) => {
-        const tick = alreadySelectedIds.includes(s.id) ? "✅ " : "";
-        return `${tick}${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`;
-      }
-    )
+    .map((s, i) => {
+      const tick = alreadySelectedIds.includes(s.id) ? "✅ " : "";
+      return `${tick}${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`;
+    })
     .join("\n");
 
   const selectedNote = alreadySelectedIds.length
-    ? `\n\n*Selected: ${alreadySelectedIds.length} service(s)*\nTap another to add, or reply *done* to confirm.`
-    : `\n\nTap a service or reply with number(s) e.g. *1* or *1,2*`;
+    ? `\n\n*Selected: ${alreadySelectedIds.length} service(s)*\nTap more to add, or tap *✅ Confirm Selection* when done.`
+    : `\n\nTap the service(s) you want, then tap *✅ Confirm Selection* when done.`;
 
-  if (services.length <= 10) {
+  // Build list rows: service rows + a "Done" sentinel at the bottom
+  const serviceRows = services.map((s, i) => ({
+    id: `svc_${s.id}`,
+    title: `${alreadySelectedIds.includes(s.id) ? "✅ " : ""}${i + 1}. ${s.name}`.slice(0, 24),
+    description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(0, 72),
+  }));
+
+  const doneRow = {
+    id: "svc_done",
+    title: alreadySelectedIds.length ? "✅ Confirm Selection" : "(Select a service first)",
+    description: alreadySelectedIds.length
+      ? `${alreadySelectedIds.length} service(s) selected — tap to confirm`
+      : "Pick at least one service above",
+  };
+
+  if (services.length <= 9) {
+    // Use list (max 10 rows incl. the done sentinel)
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppList(pid, tok, {
         toE164: customerPhone,
@@ -845,11 +951,7 @@ async function sendServicesMenu(
         sections: [
           {
             title: "Services",
-            rows: services.map((s, i) => ({
-              id: `svc_${s.id}`,
-              title: `${alreadySelectedIds.includes(s.id) ? "✅ " : ""}${i + 1}. ${s.name}`.slice(0, 24),
-              description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(0, 72),
-            })),
+            rows: [...serviceRows, doneRow],
           },
         ],
       })
@@ -865,11 +967,12 @@ async function sendServicesMenu(
 }
 
 /**
- * SELECTING_SERVICES: Customer picks services, then we freeze a slot and ask for name.
+ * SELECTING_SERVICES: Customer picks services from a single list, then confirms.
  *
- * Flow for interactive taps (WhatsApp list — one item at a time):
- *   Each svc_ tap adds to the basket and shows Confirm / Add-more buttons.
- *   confirm_services (or text "done"/"ok") triggers the booking.
+ * Flow for interactive taps (WhatsApp list):
+ *   Each svc_ tap toggles the service and re-shows the SAME list with checkmarks.
+ *   The list always contains a "✅ Confirm Selection" row at the bottom.
+ *   Tapping svc_done (or text "done"/"ok") triggers the booking.
  *
  * Flow for text input (e.g. "1,2"):
  *   All services are selected at once and the booking proceeds immediately.
@@ -881,27 +984,43 @@ async function handleSelectingServices(
   incoming: IncomingParsed,
   ctx: Ctx
 ) {
-  const res = await db.query(
-    "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
-    [salon.id]
-  );
+  const gender = ctx.gender;
+
+  let query: string;
+  let params: unknown[];
+
+  if (gender) {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true AND (gender_tag = $2 OR gender_tag = 'unisex') " +
+      "ORDER BY display_order ASC";
+    params = [salon.id, gender];
+  } else {
+    query =
+      "SELECT id, name, duration_minutes, price FROM public.services " +
+      "WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC";
+    params = [salon.id];
+  }
+
+  const res = await db.query(query, params);
   const services = res.rows;
 
   if (!services.length) {
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", { gender });
     return;
   }
 
   const selected = new Set<string>(ctx.serviceIds ?? []);
-  const inputBody = incoming.kind === "interactive" ? incoming.id : body;
-  const isInteractiveTap = inputBody.startsWith("svc_");
-  const isConfirm =
-    (incoming.kind === "interactive" && incoming.id === "confirm_services") ||
+  const inputId = incoming.kind === "interactive" ? incoming.id : "";
+
+  // ── DONE SENTINEL — customer confirmed their selection ──────────────────────
+  const isDone =
+    inputId === "svc_done" ||
     ["done", "ok", "confirm", "yes"].includes(body.trim().toLowerCase());
 
-  // ── INTERACTIVE LIST TAP (one service at a time) ────────────────────────────
-  if (isInteractiveTap) {
-    const id = inputBody.replace("svc_", "");
+  // ── INTERACTIVE LIST TAP ─────────────────────────────────────────────────────
+  if (inputId.startsWith("svc_") && inputId !== "svc_done") {
+    const id = inputId.replace("svc_", "");
     const validService = services.find((s) => s.id === id);
     if (validService) {
       // Toggle: tap again to deselect
@@ -912,67 +1031,45 @@ async function handleSelectingServices(
       }
     }
 
-    // Save accumulated selection and show confirm/add-more prompt
+    // Save accumulated selection and re-show the SAME list (no intermediate prompt)
     await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
       ...ctx,
       serviceIds: Array.from(selected),
     });
 
-    if (selected.size === 0) {
-      // Nothing selected yet — re-show the menu
-      await sendServicesMenu(salon, customerPhone, []);
-      return;
-    }
-
-    // Build summary of selected services
-    const selectedList = services.filter((s) => selected.has(s.id));
-    const summary = selectedList
-      .map((s) => `• ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`)
-      .join("\n");
-    const totalDur = selectedList.reduce((a, s) => a + s.duration_minutes, 0);
-    const totalPrice = selectedList.reduce((a, s) => a + Number(s.price), 0);
-
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppButtons(pid, tok, {
-        toE164: customerPhone,
-        bodyText:
-          `*Selected services:*\n${summary}\n\n` +
-          `Total: ${totalDur} min · ₹${totalPrice.toFixed(2)}\n\n` +
-          `Add another service or confirm your selection.`,
-        buttons: [
-          { id: "confirm_services", title: "✅ Confirm" },
-          { id: "add_more_services", title: "➕ Add more" },
-        ],
-      })
-    );
-    return;
-  }
-
-  // ── ADD MORE button ─────────────────────────────────────────────────────────
-  if (incoming.kind === "interactive" && incoming.id === "add_more_services") {
-    await sendServicesMenu(salon, customerPhone, Array.from(selected));
+    // Re-display the updated list so the customer can keep selecting or tap Confirm
+    await sendServicesMenu(salon, customerPhone, Array.from(selected), gender);
     return;
   }
 
   // ── TEXT INPUT (e.g. "1,2" or "1") — selects all at once and falls through ──
-  if (!isConfirm && !isInteractiveTap && incoming.kind === "text") {
+  if (!isDone && incoming.kind === "text") {
     const parts = body.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
     for (const p of parts) {
       const n = Number(p);
       if (!Number.isFinite(n) || n < 1 || n > services.length) continue;
       selected.add(services[n - 1].id);
     }
+    // After text-number input, re-show the list with checkmarks so customer can confirm
+    if (selected.size > 0) {
+      await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
+        ...ctx,
+        serviceIds: Array.from(selected),
+      });
+      await sendServicesMenu(salon, customerPhone, Array.from(selected), gender);
+      return;
+    }
   }
 
-  // ── CONFIRM (or text path with selections) ──────────────────────────────────
+  // ── CONFIRM (isDone or text path with no valid numbers entered) ─────────────
   if (selected.size === 0) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Please pick at least one service (e.g. reply *1* or *1,2*).",
+        body: "Please pick at least one service first.",
       })
     );
-    await sendServicesMenu(salon, customerPhone, []);
+    await sendServicesMenu(salon, customerPhone, [], gender);
     return;
   }
 
@@ -984,8 +1081,8 @@ async function handleSelectingServices(
   const dayIso = ctx.selectedDayIso;
   const sessionChoice = ctx.selectedSession;
   if (!dayIso || !sessionChoice) {
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await sendWelcomeMenu(salon, customerPhone);
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
+    await sendGenderMenu(salon, customerPhone);
     return;
   }
   const day = parseISO(dayIso);
@@ -1058,6 +1155,15 @@ async function handleSelectingServices(
       const lastEndTime = parseISO(busyRes.rows[0].end_time);
       assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
     }
+  }
+
+  // ── CUSTOMER TRAVEL BUFFER (bot bookings only) ───────────────────────────────
+  // Ensure the slot starts at least CUSTOMER_TRAVEL_BUFFER_MINUTES from now.
+  // This gives walk-in customers time to physically reach the salon.
+  // Walk-in / dashboard bookings bypass this (they go through different API routes).
+  const earliestAllowed = addMinutes(new Date(), CUSTOMER_TRAVEL_BUFFER_MINUTES);
+  if (assignedStartUtc < earliestAllowed) {
+    assignedStartUtc = earliestAllowed;
   }
 
   const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
@@ -1163,15 +1269,8 @@ async function handleConfirmingName(
 
   const frozenId = ctx.frozenAppointmentId;
   if (!frozenId) {
-    // No frozen slot — restart
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Something went wrong. Let's start over.",
-      })
-    );
-    await sendWelcomeMenu(salon, customerPhone);
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
+    await sendGenderMenu(salon, customerPhone);
     return;
   }
 
@@ -1181,17 +1280,11 @@ async function handleConfirmingName(
      FROM public.appointments WHERE id = $1 AND salon_id = $2 AND status = 'pending' LIMIT 1`,
     [frozenId, salon.id]
   );
-
   if (checkRes.rows.length === 0) {
-    // Slot expired or was taken by someone else
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Sorry, your reserved slot has expired. Let's start over and pick a new time.",
-      })
-    );
-    await sendWelcomeMenu(salon, customerPhone);
+    // Slot expired or was taken by someone else - restart cleanly via gender selection
+
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
+    await sendGenderMenu(salon, customerPhone);
     return;
   }
 

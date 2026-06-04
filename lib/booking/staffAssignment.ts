@@ -1,4 +1,4 @@
-import { addMinutes, parseISO } from "date-fns";
+import { addMinutes } from "date-fns";
 import { db } from "@/lib/db";
 import { APPOINTMENT_BUFFER_MINUTES } from "@/lib/constants";
 
@@ -9,165 +9,133 @@ export type StaffAssignmentResult = {
 };
 
 /**
- * Per-service staff assignment result.
- * Each service gets its own staff member (the earliest available for that service).
- */
-export type PerServiceAssignment = {
-  serviceId: string;
-  staffId: string;
-  staffName: string;
-  startUtc: Date;
-  endUtc: Date;
-};
-
-export type MultiStaffResult = {
-  /** The staff assigned to the first service (stored on the appointment row) */
-  primaryStaffId: string;
-  primaryStaffName: string;
-  /** Earliest start across all assignments (= start of the first service) */
-  assignedStartUtc: Date;
-  /** Per-service breakdown */
-  assignments: PerServiceAssignment[];
-};
-
-/**
- * Assigns staff to a multi-service booking.
+ * Assigns the best available staff member for a booking.
  *
- * Strategy (per-service, greedy earliest-first):
- *   For each service in order:
- *     1. Find all active staff who can perform this service.
- *     2. For each candidate, compute their earliest available start:
- *           max(previousServiceEnd, their own latest appointment end + BUFFER)
- *        (previousServiceEnd is the end of the last assigned service so far,
- *         ensuring services are chained back-to-back for the customer.)
- *     3. Pick the candidate with the smallest wait (earliest assignedStart).
- *     4. Advance the running "chain end" by this service duration + BUFFER.
+ * For each selected service (in order), finds the staff who:
+ *   1. Can perform that specific service (linked via staff_services)
+ *   2. Has the earliest available slot (their own latest appointment end + buffer,
+ *      OR the session window start — whichever is later)
+ *   3. Services are chained: the next service starts after the previous one finishes
+ *      from the customer's perspective.
  *
- * This means:
- *  - Different services CAN go to different staff members.
- *  - A staff member WILL be reused for back-to-back services if they are
- *    still the earliest available.
- *  - If no staff can handle a particular service, the whole assignment
- *    returns null (fall back to no-staff queue).
+ * The PRIMARY staff (assigned to the appointment row) is whoever handles the
+ * first service.
  *
- * Returns null if no active staff are configured or a service has no qualified staff.
+ * Falls back gracefully:
+ *   - If a particular service has no linked staff → skip per-service assignment
+ *     for that service and carry on (don't block the whole booking).
+ *   - If NO services have any linked staff at all → return null (caller uses
+ *     the salon-level queue instead).
  */
 export async function assignStaff(
   salonId: string,
   serviceIds: string[],
   requestedStartUtc: Date,
-  _totalDurationMinutes: number // kept for API compat, not used here
+  totalDurationMinutes: number
 ): Promise<StaffAssignmentResult | null> {
   if (!serviceIds.length) return null;
 
-  // Load all active staff and their service capabilities
-  const staffRes = await db.query(
+  // 1. Load all active staff and the services each can perform
+  const staffRes = await db.query<{
+    id: string;
+    name: string;
+    service_ids: string[] | null;
+  }>(
     `SELECT s.id, s.name,
             ARRAY_AGG(ss.service_id) FILTER (WHERE ss.service_id IS NOT NULL) AS service_ids
      FROM public.staff s
      LEFT JOIN public.staff_services ss ON ss.staff_id = s.id
      WHERE s.salon_id = $1 AND s.is_active = true
-     GROUP BY s.id, s.name`,
+     GROUP BY s.id, s.name
+     ORDER BY s.name ASC`,
     [salonId]
   );
 
   if (!staffRes.rows.length) return null;
 
-  // Load service durations in the order of serviceIds
-  const svcRes = await db.query(
-    `SELECT id, duration_minutes FROM public.services WHERE id = ANY($1)`,
+  // 2. Load individual service durations (for chaining)
+  const svcRes = await db.query<{ id: string; duration_minutes: number }>(
+    `SELECT id, duration_minutes FROM public.services WHERE id = ANY($1::uuid[])`,
     [serviceIds]
   );
-  const svcDurationMap = new Map<string, number>(
-    svcRes.rows.map((r) => [r.id, r.duration_minutes])
-  );
+  const durationOf = new Map(svcRes.rows.map((r) => [r.id, r.duration_minutes]));
 
-  // Build a lookup: staffId -> Set of service IDs they can do
-  const staffCapability = new Map<string, Set<string>>();
-  for (const row of staffRes.rows) {
-    staffCapability.set(row.id, new Set<string>(row.service_ids ?? []));
-  }
-
-  // Per-service assignment loop
-  const assignments: PerServiceAssignment[] = [];
-  // chainEnd tracks when the "customer chair" is free — services must be sequential
-  let chainEnd: Date = requestedStartUtc;
+  // 3. Process each service in order — find earliest available staff for each
+  let chainEnd: Date = requestedStartUtc; // when the "customer's chair" becomes free
+  let primaryStaffId: string | null = null;
+  let primaryStaffName = "";
+  let overallStart: Date = requestedStartUtc;
+  let anyServiceAssigned = false;
 
   for (const serviceId of serviceIds) {
-    const duration = svcDurationMap.get(serviceId) ?? 0;
-
-    // Find qualifying staff for this service
+    // Staff who can perform this specific service
     const qualifying = staffRes.rows.filter((row) =>
-      (staffCapability.get(row.id) ?? new Set()).has(serviceId)
+      (row.service_ids ?? []).includes(serviceId)
     );
 
     if (!qualifying.length) {
-      // No staff can perform this service — fall back to no-staff queue
-      return null;
+      // No staff configured for this service — advance chainEnd by the service
+      // duration and continue (don't block the whole booking)
+      const dur = durationOf.get(serviceId) ?? 0;
+      chainEnd = addMinutes(chainEnd, dur + APPOINTMENT_BUFFER_MINUTES);
+      continue;
     }
 
-    // For each qualifying staff, find their earliest available start
-    // They can start at max(chainEnd, their own latest end + buffer)
+    // For each qualifying staff, compute earliest they can start (>= chainEnd)
     let bestStaffId: string | null = null;
     let bestStaffName = "";
-    let bestStart: Date = new Date(8640000000000000); // max date sentinel
+    let bestStart: Date = new Date(8640000000000000); // sentinel: very far future
 
     for (const staff of qualifying) {
-      // Find this staff member's latest appointment end time
-      const busyRes = await db.query(
+      // Find latest appointment for this staff that ends after chainEnd
+      const busyRes = await db.query<{ end_time: string }>(
         `SELECT end_time
          FROM public.appointments
          WHERE salon_id = $1
-           AND staff_id = $2
+           AND staff_id  = $2
            AND status IN ('pending', 'confirmed')
-           AND end_time > $3
+           AND end_time  > $3
          ORDER BY end_time DESC
          LIMIT 1`,
         [salonId, staff.id, chainEnd.toISOString()]
       );
 
-      let staffAvailableAt: Date = chainEnd;
-
+      // Staff is available at chainEnd unless they have a later commitment
+      let availableAt: Date = chainEnd;
       if (busyRes.rows.length > 0) {
         const lastEnd = new Date(busyRes.rows[0].end_time);
         const afterBuffer = addMinutes(lastEnd, APPOINTMENT_BUFFER_MINUTES);
-        if (afterBuffer > chainEnd) {
-          staffAvailableAt = afterBuffer;
-        }
+        if (afterBuffer > chainEnd) availableAt = afterBuffer;
       }
 
-      if (staffAvailableAt < bestStart) {
-        bestStart = staffAvailableAt;
+      // Pick the staff with the EARLIEST available slot
+      if (availableAt < bestStart) {
+        bestStart = availableAt;
         bestStaffId = staff.id;
         bestStaffName = staff.name;
       }
     }
 
-    if (!bestStaffId) return null;
+    if (!bestStaffId) continue; // safety — shouldn't happen
 
-    const svcEnd = addMinutes(bestStart, duration + APPOINTMENT_BUFFER_MINUTES);
+    // Record primary (first) staff
+    if (!anyServiceAssigned) {
+      primaryStaffId = bestStaffId;
+      primaryStaffName = bestStaffName;
+      overallStart = bestStart;
+      anyServiceAssigned = true;
+    }
 
-    assignments.push({
-      serviceId,
-      staffId: bestStaffId,
-      staffName: bestStaffName,
-      startUtc: bestStart,
-      endUtc: svcEnd,
-    });
-
-    // Next service starts after this one ends (customer perspective)
-    chainEnd = svcEnd;
+    // Advance chain for the next service
+    const dur = durationOf.get(serviceId) ?? 0;
+    chainEnd = addMinutes(bestStart, dur + APPOINTMENT_BUFFER_MINUTES);
   }
 
-  if (!assignments.length) return null;
+  if (!primaryStaffId) return null; // no services had any qualified staff
 
-  const first = assignments[0];
-
-  // Return in the shape expected by the caller (StaffAssignmentResult)
-  // The overall appointment start = first service start
   return {
-    staffId: first.staffId,
-    staffName: first.staffName,
-    assignedStartUtc: first.startUtc,
+    staffId: primaryStaffId,
+    staffName: primaryStaffName,
+    assignedStartUtc: overallStart,
   };
 }

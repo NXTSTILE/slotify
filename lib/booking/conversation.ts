@@ -924,15 +924,13 @@ async function sendServicesMenu(
 
   let footer: string;
   if (alreadySelectedIds.length === 0) {
-    footer = `\n\nReply with number(s) to select, e.g. *1* or *1,2,3*\nThen reply *done* to confirm.`;
+    footer = `\n\nReply with the number(s) of your choice, e.g. *1* or *1,2,3*`;
   } else {
     const selectedNames = services
       .filter((s) => alreadySelectedIds.includes(s.id))
       .map((s) => s.name)
       .join(", ");
-    footer =
-      `\n\n✅ *Selected:* ${selectedNames}\n` +
-      `Reply more numbers to add, or *done* to confirm.`;
+    footer = `\n\n✅ *Selected:* ${selectedNames}\nReply more numbers to add or remove.`;
   }
 
   await sendAuth(salon, (pid, tok) =>
@@ -985,47 +983,35 @@ async function handleSelectingServices(
 
   const selected = new Set<string>(ctx.serviceIds ?? []);
 
-  // Normalise input — interactive taps (svc_done from old sessions) still handled
+  // Legacy interactive tap (svc_done from old in-flight sessions) still supported
   const inputId = incoming.kind === "interactive" ? incoming.id : "";
   const textBody = body.trim().toLowerCase();
 
-  // Check if this is a confirm signal
-  const isDone =
+  // Only treat as explicit confirm if customer already has services chosen and says done/yes
+  const isExplicitConfirm =
     inputId === "svc_done" ||
-    ["done", "ok", "confirm", "yes"].includes(textBody);
+    (selected.size > 0 && ["done", "ok", "confirm", "yes"].includes(textBody));
 
-  if (!isDone) {
+  if (!isExplicitConfirm) {
     // Parse number(s) from text — e.g. "1", "1,2", "1 2 3", "1,2,3"
     const parts = body.split(/[\s,\/]+/).map((x) => x.trim()).filter(Boolean);
-    let addedAny = false;
+    let parsedAny = false;
     for (const p of parts) {
       const n = Number(p);
       if (!Number.isFinite(n) || n < 1 || n > services.length) continue;
-      const svcId = services[n - 1].id;
-      if (selected.has(svcId)) {
-        selected.delete(svcId); // toggle off if already selected
-      } else {
-        selected.add(svcId);
-      }
-      addedAny = true;
+      selected.add(services[n - 1].id); // always ADD — simpler UX
+      parsedAny = true;
     }
 
-    if (addedAny || selected.size > 0) {
-      // Save and re-show updated menu
-      await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
-        ...ctx,
-        serviceIds: Array.from(selected),
-      });
+    if (!parsedAny) {
+      // Nothing valid typed — re-show the menu
       await sendServicesMenu(salon, customerPhone, Array.from(selected), gender);
       return;
     }
-
-    // Nothing parseable typed and nothing selected yet
-    await sendServicesMenu(salon, customerPhone, [], gender);
-    return;
+    // Numbers were parsed — fall through immediately to booking. No "done" step.
   }
 
-  // ── CONFIRM (isDone or text path with no valid numbers entered) ─────────────
+  // ── PROCEED TO BOOKING ──────────────────────────────────────────────────────
   if (selected.size === 0) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {

@@ -642,6 +642,8 @@ async function handleIdleInput(
 
 /**
  * SELECTING_DATE: Customer picks today or tomorrow (buttons or text).
+ * We just validate and save the date — NO availability pre-check here.
+ * Working hours / session availability are checked in handleSelectingSession.
  */
 async function handleSelectingDate(
   salon: SalonRow,
@@ -675,54 +677,28 @@ async function handleSelectingDate(
     return;
   }
 
-  // Check which sessions are available (no 24h restriction — allow same-day)
-  // We pass a dummy duration of 30 min just to check windows; actual duration checked after services
-  await purgeExpiredPendingAppointments(salon.id);
-  const windowRes = await getAvailableWindows(salon.id, day, 30, true /* bypass lead time */);
-
-  if (!windowRes.ok) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
-    );
-    return;
-  }
-
-  const availableWindows = windowRes.windows.filter((w) => w.status === "AVAILABLE");
-
-  if (availableWindows.length === 0) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "No sessions available for this date. Please choose another day.",
-      })
-    );
-    await sendDateMenu(salon, customerPhone);
-    return;
-  }
-
+  // Save the date and immediately show Morning / Evening buttons.
+  // No availability check here — we do that when the session is actually chosen.
   await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
     ...ctx,
     selectedDayIso: day.toISOString(),
   });
 
-  const buttons = availableWindows.slice(0, 3).map((w) => ({
-    id: `session_${w.name.toLowerCase()}`,
-    title: w.name,
-  }));
-
-  const textLines = availableWindows.map((w) => `• ${w.name} (${w.range})`);
-
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `Available sessions:\n${textLines.join("\n")}\n\nChoose a session:`,
-      buttons,
+      bodyText: `Great! Which session works for you?`,
+      buttons: [
+        { id: "session_morning", title: "🌅 Morning" },
+        { id: "session_evening", title: "🌆 Evening" },
+      ],
     })
   );
 }
 
 /**
  * SELECTING_SESSION: Customer picks Morning or Evening.
+ * HERE is where we do the real working-hours + availability check.
  */
 async function handleSelectingSession(
   salon: SalonRow,
@@ -740,15 +716,80 @@ async function handleSelectingSession(
 
   if (sessionChoice !== "morning" && sessionChoice !== "evening") {
     await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
+      sendWhatsAppButtons(pid, tok, {
         toE164: customerPhone,
-        body: 'Please choose "Morning" or "Evening".',
+        bodyText: 'Please choose Morning or Evening:',
+        buttons: [
+          { id: "session_morning", title: "🌅 Morning" },
+          { id: "session_evening", title: "🌆 Evening" },
+        ],
       })
     );
     return;
   }
 
-  // Save session choice, move to service selection
+  const dayIso = ctx.selectedDayIso;
+  if (!dayIso) {
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {});
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+  const day = parseISO(dayIso);
+
+  // Check if the salon is open on this day and if the chosen session has capacity.
+  // Use a small dummy duration (15 min) — actual duration check happens after services are chosen.
+  await purgeExpiredPendingAppointments(salon.id);
+  const windowRes = await getAvailableWindows(salon.id, day, 15, true);
+
+  if (!windowRes.ok) {
+    // Salon is closed or date has passed — send back to date selection
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {});
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: `${windowRes.reason} Please pick another date.`,
+      })
+    );
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  const chosenWindow = windowRes.windows.find(
+    (w) => w.name.toLowerCase() === sessionChoice
+  );
+
+  if (!chosenWindow || chosenWindow.status !== "AVAILABLE") {
+    // Session is fully booked — tell them and offer the other session or another date
+    const other = windowRes.windows.find(
+      (w) => w.name.toLowerCase() !== sessionChoice && w.status === "AVAILABLE"
+    );
+    const otherMsg = other
+      ? `\nThe ${other.name} session (${other.range}) still has availability — would you like that instead?`
+      : `\nBoth sessions are fully booked for this day. Please try another date.`;
+
+    const buttons = other
+      ? [
+          { id: `session_${other.name.toLowerCase()}`, title: other.name },
+          { id: "btn_today", title: "Today" },
+          { id: "btn_tomorrow", title: "Tomorrow" },
+        ]
+      : [
+          { id: "btn_today", title: "Today" },
+          { id: "btn_tomorrow", title: "Tomorrow" },
+        ];
+
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", { ...ctx, selectedDayIso: undefined });
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppButtons(pid, tok, {
+        toE164: customerPhone,
+        bodyText: `The ${sessionChoice} session is fully booked.${otherMsg}`,
+        buttons,
+      })
+    );
+    return;
+  }
+
+  // Session is available — move to service selection
   await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
     ...ctx,
     selectedSession: sessionChoice,

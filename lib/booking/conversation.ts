@@ -875,10 +875,10 @@ async function handleSelectingSession(
 }
 
 /**
- * Sends the services selection menu, optionally showing already-selected services.
- * Filters by gender (male/female) — always includes unisex services.
- * Includes a "✅ Confirm My Selection" row at the bottom so customers can
- * select multiple services and confirm — all from the same list without extra prompts.
+ * Sends the services selection menu as a plain-text numbered list.
+ * Customer replies with numbers (e.g. "1,2,3") to select all at once,
+ * then types "done" to confirm.
+ * Filters by gender — always includes unisex services.
  */
 async function sendServicesMenu(
   salon: SalonRow,
@@ -922,60 +922,33 @@ async function sendServicesMenu(
     })
     .join("\n");
 
-  const selectedNote = alreadySelectedIds.length
-    ? `\n\n*Selected: ${alreadySelectedIds.length} service(s)*\nTap more to add, or tap *✅ Confirm Selection* when done.`
-    : `\n\nTap the service(s) you want, then tap *✅ Confirm Selection* when done.`;
-
-  // Build list rows: service rows + a "Done" sentinel at the bottom
-  const serviceRows = services.map((s, i) => ({
-    id: `svc_${s.id}`,
-    title: `${alreadySelectedIds.includes(s.id) ? "✅ " : ""}${i + 1}. ${s.name}`.slice(0, 24),
-    description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(0, 72),
-  }));
-
-  const doneRow = {
-    id: "svc_done",
-    title: alreadySelectedIds.length ? "✅ Confirm Selection" : "(Select a service first)",
-    description: alreadySelectedIds.length
-      ? `${alreadySelectedIds.length} service(s) selected — tap to confirm`
-      : "Pick at least one service above",
-  };
-
-  if (services.length <= 9) {
-    // Use list (max 10 rows incl. the done sentinel)
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppList(pid, tok, {
-        toE164: customerPhone,
-        bodyText: `Choose your service(s):\n\n${catalog}${selectedNote}`,
-        buttonText: "Pick service",
-        sections: [
-          {
-            title: "Services",
-            rows: [...serviceRows, doneRow],
-          },
-        ],
-      })
-    );
+  let footer: string;
+  if (alreadySelectedIds.length === 0) {
+    footer = `\n\nReply with number(s) to select, e.g. *1* or *1,2,3*\nThen reply *done* to confirm.`;
   } else {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: `Choose your service(s) by number(s), e.g. *1* or *1,2*:\n\n${catalog}${selectedNote}`,
-      })
-    );
+    const selectedNames = services
+      .filter((s) => alreadySelectedIds.includes(s.id))
+      .map((s) => s.name)
+      .join(", ");
+    footer =
+      `\n\n✅ *Selected:* ${selectedNames}\n` +
+      `Reply more numbers to add, or *done* to confirm.`;
   }
+
+  await sendAuth(salon, (pid, tok) =>
+    sendWhatsAppText(pid, tok, {
+      toE164: customerPhone,
+      body: `📌 *Choose your service(s):*\n\n${catalog}${footer}`,
+    })
+  );
 }
 
 /**
- * SELECTING_SERVICES: Customer picks services from a single list, then confirms.
+ * SELECTING_SERVICES: Customer types service numbers all at once (e.g. "1,2,3"),
+ * then types "done" to confirm. Plain-text flow — no WhatsApp interactive list.
  *
- * Flow for interactive taps (WhatsApp list):
- *   Each svc_ tap toggles the service and re-shows the SAME list with checkmarks.
- *   The list always contains a "✅ Confirm Selection" row at the bottom.
- *   Tapping svc_done (or text "done"/"ok") triggers the booking.
- *
- * Flow for text input (e.g. "1,2"):
- *   All services are selected at once and the booking proceeds immediately.
+ * Each numeric input updates the selection and re-shows the menu with checkmarks.
+ * "done" / "ok" / "confirm" / "yes" triggers the booking with whatever is selected.
  */
 async function handleSelectingServices(
   salon: SalonRow,
@@ -1011,47 +984,34 @@ async function handleSelectingServices(
   }
 
   const selected = new Set<string>(ctx.serviceIds ?? []);
-  const inputId = incoming.kind === "interactive" ? incoming.id : "";
 
-  // ── DONE SENTINEL — customer confirmed their selection ──────────────────────
+  // Normalise input — interactive taps (svc_done from old sessions) still handled
+  const inputId = incoming.kind === "interactive" ? incoming.id : "";
+  const textBody = body.trim().toLowerCase();
+
+  // Check if this is a confirm signal
   const isDone =
     inputId === "svc_done" ||
-    ["done", "ok", "confirm", "yes"].includes(body.trim().toLowerCase());
+    ["done", "ok", "confirm", "yes"].includes(textBody);
 
-  // ── INTERACTIVE LIST TAP ─────────────────────────────────────────────────────
-  if (inputId.startsWith("svc_") && inputId !== "svc_done") {
-    const id = inputId.replace("svc_", "");
-    const validService = services.find((s) => s.id === id);
-    if (validService) {
-      // Toggle: tap again to deselect
-      if (selected.has(id)) {
-        selected.delete(id);
-      } else {
-        selected.add(id);
-      }
-    }
-
-    // Save accumulated selection and re-show the SAME list (no intermediate prompt)
-    await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
-      ...ctx,
-      serviceIds: Array.from(selected),
-    });
-
-    // Re-display the updated list so the customer can keep selecting or tap Confirm
-    await sendServicesMenu(salon, customerPhone, Array.from(selected), gender);
-    return;
-  }
-
-  // ── TEXT INPUT (e.g. "1,2" or "1") — selects all at once and falls through ──
-  if (!isDone && incoming.kind === "text") {
-    const parts = body.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  if (!isDone) {
+    // Parse number(s) from text — e.g. "1", "1,2", "1 2 3", "1,2,3"
+    const parts = body.split(/[\s,\/]+/).map((x) => x.trim()).filter(Boolean);
+    let addedAny = false;
     for (const p of parts) {
       const n = Number(p);
       if (!Number.isFinite(n) || n < 1 || n > services.length) continue;
-      selected.add(services[n - 1].id);
+      const svcId = services[n - 1].id;
+      if (selected.has(svcId)) {
+        selected.delete(svcId); // toggle off if already selected
+      } else {
+        selected.add(svcId);
+      }
+      addedAny = true;
     }
-    // After text-number input, re-show the list with checkmarks so customer can confirm
-    if (selected.size > 0) {
+
+    if (addedAny || selected.size > 0) {
+      // Save and re-show updated menu
       await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
         ...ctx,
         serviceIds: Array.from(selected),
@@ -1059,6 +1019,10 @@ async function handleSelectingServices(
       await sendServicesMenu(salon, customerPhone, Array.from(selected), gender);
       return;
     }
+
+    // Nothing parseable typed and nothing selected yet
+    await sendServicesMenu(salon, customerPhone, [], gender);
+    return;
   }
 
   // ── CONFIRM (isDone or text path with no valid numbers entered) ─────────────

@@ -574,35 +574,47 @@ export async function addWalkInBookingAction(formData: FormData) {
       return { error: "No services found." };
     }
 
-    // 3. Find latest appointment end time inside window
-    const lastAptRes = await client.query(
-      `SELECT end_time FROM public.appointments 
-       WHERE salon_id = $1 AND start_time >= NOW() 
-       AND status IN ('pending', 'confirmed') 
-       ORDER BY end_time DESC LIMIT 1`,
-      [salon.id]
-    );
-    const lastApt = lastAptRes.rows[0];
-
-    const now = new Date();
-    let startTime = addMinutes(now, 2); 
-    
-    if (lastApt && new Date(lastApt.end_time) > now) {
-      startTime = addMinutes(new Date(lastApt.end_time), 2);
-    }
-
+    // 3. Compute total duration and price
     const totalDuration = dbServices.reduce((sum, s) => sum + s.duration_minutes, 0);
     const totalPrice = dbServices.reduce((sum, s) => sum + Number(s.price), 0);
-    const endTime = addMinutes(startTime, totalDuration);
 
-    // 4a. Smart staff assignment
+    // 4a. Smart staff assignment — each staff member is checked independently.
+    //     requestedStart = NOW so each staff's earliest free slot from this moment is found.
+    //     If staff B is free from 9:00 AM and staff A is busy until 10:00, staff B gets 9:00.
+    const now = new Date();
+    const requestedStart = addMinutes(now, 2); // 2-min grace for walk-in
+
     const staffResult = await assignStaff(
       salon.id,
       serviceIds,
-      startTime,
+      requestedStart,
       totalDuration
     );
+
+    // If staff found, use their computed available start; otherwise queue after the salon's latest end
+    let startTime: Date;
     const staffId = staffResult?.staffId ?? null;
+
+    if (staffResult) {
+      // Staff's own next available slot (independent of other staff)
+      startTime = staffResult.assignedStartUtc;
+    } else {
+      // No staff configured — fall back to salon-level queue
+      const lastAptRes = await client.query(
+        `SELECT end_time FROM public.appointments 
+         WHERE salon_id = $1 AND status IN ('pending', 'confirmed')
+         AND end_time > NOW()
+         ORDER BY end_time DESC LIMIT 1`,
+        [salon.id]
+      );
+      const lastApt = lastAptRes.rows[0];
+      startTime = requestedStart;
+      if (lastApt && new Date(lastApt.end_time) > now) {
+        startTime = addMinutes(new Date(lastApt.end_time), 2);
+      }
+    }
+
+    const endTime = addMinutes(startTime, totalDuration);
 
     // 4b. Insert Appointment
     const aptInsert = await client.query(

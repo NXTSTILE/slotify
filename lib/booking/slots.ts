@@ -21,14 +21,16 @@ export type WindowResult =
   | { ok: false; reason: string };
 
 /** 
- * NEW LOGIC: Calculates availability for Morning and Evening sessions.
- * Queries DigitalOcean PostgreSQL directly.
+ * Calculates availability for Morning and Evening sessions.
+ *
+ * @param bypassLeadTime - When true, disables the SAME_DAY_MIN_LEAD_HOURS restriction.
+ *   Use for bot bookings (customers book at current time) and manager/walk-in bookings.
  */
 export async function getAvailableWindows(
   salonId: string,
   selectedDayUtc: Date,
   totalDurationMinutes: number,
-  isManager: boolean = false // Managers bypass the 24h rule
+  bypassLeadTime: boolean = false
 ): Promise<WindowResult> {
   const now = new Date();
   const zonedDay = toZonedTime(selectedDayUtc, SALON_TIMEZONE);
@@ -36,10 +38,17 @@ export async function getAvailableWindows(
   const dayStartUtc = parseISO(`${format(dayStartLocal, "yyyy-MM-dd")}T00:00:00+05:30`);
   const dayEndUtc = addMinutes(dayStartUtc, 24 * 60);
 
-  // 1. Lead Time Validation (Bypassed if Manager)
-  const minStartAllowed = isManager ? now : addMinutes(now, SAME_DAY_MIN_LEAD_HOURS * 60);
-  if (isBefore(dayEndUtc, minStartAllowed)) {
-    return { ok: false, reason: `Bookings must be made at least ${SAME_DAY_MIN_LEAD_HOURS} hours in advance.` };
+  // 1. Lead Time Validation (Bypassed for same-day bot bookings and managers)
+  if (!bypassLeadTime) {
+    const minStartAllowed = addMinutes(now, SAME_DAY_MIN_LEAD_HOURS * 60);
+    if (isBefore(dayEndUtc, minStartAllowed)) {
+      return { ok: false, reason: `Bookings must be made at least ${SAME_DAY_MIN_LEAD_HOURS} hours in advance.` };
+    }
+  }
+
+  // For same-day: ensure the day hasn't entirely passed
+  if (isBefore(dayEndUtc, now)) {
+    return { ok: false, reason: "This date has already passed. Please choose today or tomorrow." };
   }
 
   // 2. Load Salon Working Hours
@@ -57,15 +66,28 @@ export async function getAvailableWindows(
   const closeUtc = combineKolkataDateAndTime(dayStartUtc, wh.close_time);
 
   // 3. Define Windows (Morning vs Evening)
-  // Split point is 1:00 PM (13:00)
+  // Split point is 1:00 PM (13:00) Kolkata time
   const splitTimeUtc = combineKolkataDateAndTime(dayStartUtc, "13:00:00");
   
+  // For same-day bookings, constrain session start to current time
+  const effectiveNow = bypassLeadTime ? now : now;
+
   const sessions = [
-    { name: "Morning", start: openUtc, end: splitTimeUtc },
-    { name: "Evening", start: splitTimeUtc, end: closeUtc }
+    { 
+      name: "Morning", 
+      start: maxDate(openUtc, effectiveNow),
+      rawStart: openUtc,
+      end: splitTimeUtc 
+    },
+    { 
+      name: "Evening", 
+      start: maxDate(splitTimeUtc, effectiveNow),
+      rawStart: splitTimeUtc,
+      end: closeUtc 
+    }
   ];
 
-  // 4. Fetch Busy Times (Appointments) from PostgreSQL
+  // 4. Fetch Busy Times — exclude expired pending appointments
   const busyRes = await db.query(
     `SELECT start_time, end_time FROM public.appointments 
      WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
@@ -80,32 +102,39 @@ export async function getAvailableWindows(
   }));
 
   // 5. Calculate availability for each session
-  const windowResults: WindowStatus[] = sessions.map(session => {
-    // Total minutes in this window
-    const totalWindowMinutes = (session.end.getTime() - session.start.getTime()) / 60000;
-    
-    // Minutes already booked in this window
-    const bookedMinutes = busy.reduce((acc, b) => {
-      const overlapStart = Math.max(session.start.getTime(), b.start.getTime());
-      const overlapEnd = Math.min(session.end.getTime(), b.end.getTime());
-      const overlapMs = Math.max(0, overlapEnd - overlapStart);
-      return acc + (overlapMs / 60000);
-    }, 0);
+  const windowResults: WindowStatus[] = sessions
+    .filter(session => isBefore(session.start, session.end)) // skip fully-elapsed sessions
+    .map(session => {
+      // Remaining minutes from effective start (now or session open) to session end
+      const totalWindowMinutes = (session.end.getTime() - session.start.getTime()) / 60000;
+      
+      // Minutes already booked in this window
+      const bookedMinutes = busy.reduce((acc, b) => {
+        const overlapStart = Math.max(session.start.getTime(), b.start.getTime());
+        const overlapEnd = Math.min(session.end.getTime(), b.end.getTime());
+        const overlapMs = Math.max(0, overlapEnd - overlapStart);
+        return acc + (overlapMs / 60000);
+      }, 0);
 
-    const freeMinutes = totalWindowMinutes - bookedMinutes;
-    const isAvailable = freeMinutes >= (totalDurationMinutes + APPOINTMENT_BUFFER_MINUTES);
+      const freeMinutes = totalWindowMinutes - bookedMinutes;
+      const isAvailable = freeMinutes >= (totalDurationMinutes + APPOINTMENT_BUFFER_MINUTES);
 
-    return {
-      name: session.name,
-      label: `${session.name} Session`,
-      status: isAvailable ? "AVAILABLE" : "FULLY_BOOKED",
-      range: `${format(toZonedTime(session.start, SALON_TIMEZONE), "hh:mm a")} - ${format(toZonedTime(session.end, SALON_TIMEZONE), "hh:mm a")}`,
-      startUtc: session.start,
-      endUtc: session.end
-    };
-  });
+      return {
+        name: session.name,
+        label: `${session.name} Session`,
+        status: isAvailable ? "AVAILABLE" : "FULLY_BOOKED",
+        range: `${format(toZonedTime(session.rawStart, SALON_TIMEZONE), "hh:mm a")} - ${format(toZonedTime(session.end, SALON_TIMEZONE), "hh:mm a")}`,
+        startUtc: session.start,
+        endUtc: session.end
+      };
+    });
 
   return { ok: true, windows: windowResults };
+}
+
+/** Returns the later of two dates */
+function maxDate(a: Date, b: Date): Date {
+  return a.getTime() >= b.getTime() ? a : b;
 }
 
 /** Utility to merge a Date and a HH:mm:ss string into a Kolkata-zoned Date */

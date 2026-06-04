@@ -11,13 +11,20 @@ export type StaffAssignmentResult = {
 /**
  * Finds the best staff member to assign for a booking given:
  *  - the list of service IDs the customer wants
- *  - the requested start time (session window start)
+ *  - the requested start time (session window start — the earliest we can begin)
  *  - the total appointment duration
+ *
+ * IMPORTANT — Each staff member has an INDEPENDENT schedule.
+ * Their earliest available start is:
+ *   max(requestedStartUtc, their_own_latest_end_time + BUFFER)
+ *
+ * This means Staff B is never forced to wait for Staff A's appointments to finish.
  *
  * Priority rules:
  *   Rule 1 — Closest next-available slot (smallest wait time) wins.
  *   Rule 2 — Among ties, specialists (fewer total services) are preferred
  *             over generalists (staff who can do every salon service).
+ *   Rule 3 — Alphabetical name as stable tiebreaker.
  *
  * Returns null if no active staff can handle all the requested services.
  */
@@ -58,7 +65,14 @@ export async function assignStaff(
   if (!qualifying.length) return null;
 
   // 4. For each qualifying staff, compute their earliest available start time
-  //    = max(requestedStartUtc, their latest booked end_time + BUFFER)
+  //    INDEPENDENTLY — only look at THEIR OWN appointments, not the salon's overall queue.
+  //
+  //    Formula:
+  //      latestOwnEnd = latest end_time of appointments assigned to THIS staff member
+  //                     (pending or confirmed, any time — not restricted to after requestedStart)
+  //      assignedStart = max(requestedStartUtc, latestOwnEnd + BUFFER)
+  //
+  //    This ensures Staff B can start at the session window start even if Staff A is busy until 10:00.
   const candidates: {
     staffId: string;
     staffName: string;
@@ -67,7 +81,9 @@ export async function assignStaff(
   }[] = [];
 
   for (const staff of qualifying) {
-    // Find their latest appointment that ends after the requested start
+    // Find this staff member's latest active appointment end time
+    // We look at all future/ongoing appointments, not just those starting after requestedStartUtc,
+    // so that back-to-back bookings on the same staff are properly chained.
     const busyRes = await db.query(
       `SELECT end_time
        FROM public.appointments
@@ -81,9 +97,11 @@ export async function assignStaff(
     );
 
     let assignedStart: Date = requestedStartUtc;
+
     if (busyRes.rows.length > 0) {
       const lastEnd = new Date(busyRes.rows[0].end_time);
       const afterBuffer = addMinutes(lastEnd, APPOINTMENT_BUFFER_MINUTES);
+      // Only push start forward if the staff's own busy time overlaps the requested slot
       if (afterBuffer > requestedStartUtc) {
         assignedStart = afterBuffer;
       }
@@ -106,14 +124,12 @@ export async function assignStaff(
     if (timeDiff !== 0) return timeDiff;
 
     // Among equal times: prefer specialists (lower serviceCount) over generalists
-    // A "generalist" is someone who can perform EVERY service in the salon.
     const aIsGeneralist = a.serviceCount >= totalSalonServices;
     const bIsGeneralist = b.serviceCount >= totalSalonServices;
     if (aIsGeneralist !== bIsGeneralist) {
-      return aIsGeneralist ? 1 : -1; // generalists go last
+      return aIsGeneralist ? 1 : -1;
     }
 
-    // Within same tier: fewer services = more specialist = preferred
     if (a.serviceCount !== b.serviceCount) return a.serviceCount - b.serviceCount;
 
     return a.staffName.localeCompare(b.staffName);

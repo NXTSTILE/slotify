@@ -15,15 +15,19 @@ import {
   sendWhatsAppButtons,
 } from "@/lib/whatsapp/send";
 
+/** How many minutes a pending "frozen" slot lasts before it expires and is released */
+const SLOT_FREEZE_TIMEOUT_MINUTES = 5;
+
 const CtxSchema = z.object({
   serviceIds: z.array(z.string().uuid()).optional(),
-  pendingDateInput: z.string().optional(),
   selectedDayIso: z.string().optional(),
+  selectedSession: z.string().optional(), // "morning" | "evening"
   slotStarts: z.array(z.string()).optional(),
   selectedSlotIndex: z.number().int().optional(),
   pendingCancelAppointmentId: z.string().uuid().optional(),
   pendingReschedule: z.boolean().optional(),
   lastListMax: z.number().int().optional(),
+  frozenAppointmentId: z.string().uuid().optional(), // The pending appointment used to freeze a slot
   // Staff assignment
   assignedStaffId: z.string().uuid().optional(),
   assignedStaffName: z.string().optional(),
@@ -50,6 +54,14 @@ function parseContext(raw: any): Ctx {
   const o = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
   const parsed = CtxSchema.safeParse(o);
   return parsed.success ? parsed.data : {};
+}
+
+/**
+ * Returns true if the given text is a greeting that should reset to the main menu.
+ */
+function isGreeting(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[!.,?]+$/, "");
+  return ["hi", "hii", "hiii", "hello", "hey", "helo", "hai", "start"].includes(t);
 }
 
 /**
@@ -109,6 +121,7 @@ function tokenizeKeywords(text: string): string | null {
     POLICY: "POLICY",
     CANCEL: "CANCEL",
     RESCHEDULE: "RESCHEDULE",
+    BOOK: "BOOK",
   };
   return map[t] ?? null;
 }
@@ -152,6 +165,47 @@ async function findActiveAppointment(
   } catch (err: any) {
     console.error("[conversation] find active appointment error", err.message);
     return null;
+  }
+}
+
+/**
+ * Releases any frozen (pending) appointment held by this customer that hasn't been confirmed yet.
+ * This is called when the customer restarts the flow so the slot is freed for others.
+ */
+async function releaseFrozenSlot(
+  salonId: string,
+  customerPhone: string,
+  frozenAppointmentId?: string
+): Promise<void> {
+  if (!frozenAppointmentId) return;
+  try {
+    // Only delete if it's still pending (not confirmed or cancelled)
+    await db.query(
+      `DELETE FROM public.appointments 
+       WHERE id = $1 AND salon_id = $2 AND status = 'pending'`,
+      [frozenAppointmentId, salonId]
+    );
+    // Also cascade-clean appointment_services rows (FK ON DELETE CASCADE handles this automatically)
+    console.log("[conversation] released frozen slot:", frozenAppointmentId);
+  } catch (err: any) {
+    console.error("[conversation] releaseFrozenSlot error", err.message);
+  }
+}
+
+/**
+ * Purges globally expired pending appointments for a salon (older than SLOT_FREEZE_TIMEOUT_MINUTES).
+ * Called at the start of slot checking to free up stale frozen slots.
+ */
+async function purgeExpiredPendingAppointments(salonId: string): Promise<void> {
+  try {
+    await db.query(
+      `DELETE FROM public.appointments 
+       WHERE salon_id = $1 AND status = 'pending' 
+       AND created_at < NOW() - INTERVAL '${SLOT_FREEZE_TIMEOUT_MINUTES} minutes'`,
+      [salonId]
+    );
+  } catch (err: any) {
+    console.error("[conversation] purgeExpiredPendingAppointments error", err.message);
   }
 }
 
@@ -208,7 +262,7 @@ async function cancelAppointmentById(
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body: "Your appointment has been cancelled. Send BOOK when you're ready to book again.",
+      body: "Your appointment has been cancelled. Send *hi* to start a new booking.",
     })
   );
 }
@@ -243,6 +297,16 @@ export async function handleConversationMessage(
   const { state, ctx } = await getState(salonId, customerPhone);
   const kw = tokenizeKeywords(userText);
 
+  // ── GREETING RESET ─────────────────────────────────────────────────────────
+  // Any greeting resets conversation to the welcome menu, releasing frozen slots.
+  if (incoming.kind === "text" && isGreeting(userText)) {
+    await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
+    await ensureConversationRow(salonId, customerPhone, "IDLE", {});
+    await sendWelcomeMenu(salon, customerPhone);
+    return;
+  }
+
+  // ── GLOBAL KEYWORD COMMANDS (work from any state) ──────────────────────────
   if (kw === "HELP") {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
@@ -256,7 +320,7 @@ export async function handleConversationMessage(
           `POLICY — cancellation policy\n` +
           `CANCEL — cancel active booking\n` +
           `RESCHEDULE — change appointment\n` +
-          `Or chat to book a visit.`,
+          `Or send *hi* to start a booking.`,
       })
     );
     return;
@@ -288,6 +352,14 @@ export async function handleConversationMessage(
   }
   if (kw === "HOURS") {
     await sendWorkingHoursSummary(salon, customerPhone);
+    return;
+  }
+
+  // BOOK keyword — jump to date selection
+  if (kw === "BOOK") {
+    await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
+    await ensureConversationRow(salonId, customerPhone, "SELECTING_DATE", {});
+    await sendDateMenu(salon, customerPhone);
     return;
   }
 
@@ -331,7 +403,6 @@ export async function handleConversationMessage(
       return;
     }
 
-    // Retrieve active appointment service relations
     const linesRes = await db.query(
       "SELECT service_id FROM public.appointment_services WHERE appointment_id = $1",
       [apt.id]
@@ -357,35 +428,23 @@ export async function handleConversationMessage(
       client.release();
     }
 
-    if (!ids.length) {
-      await ensureConversationRow(salonId, customerPhone, "SELECTING_SERVICES", {});
-      await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, {
-          toE164: customerPhone,
-          body: "Previous booking cleared. Let's pick your services again.",
-        })
-      );
-      await startIdleFlow(salon, customerPhone);
-      return;
-    }
-
+    // Re-use previous services if available, jump to date selection
     const nextCtx: Ctx = {
-      ...ctx,
-      serviceIds: ids,
+      serviceIds: ids.length ? ids : undefined,
       pendingReschedule: true,
-      selectedDayIso: undefined,
-      slotStarts: undefined,
     };
     await ensureConversationRow(salonId, customerPhone, "SELECTING_DATE", nextCtx);
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Previous booking cancelled for reschedule. Please send your preferred date (DD/MM/YYYY), or say today / tomorrow.",
+        body: "Previous booking cancelled. Let's reschedule — pick a date:",
       })
     );
+    await sendDateMenu(salon, customerPhone);
     return;
   }
 
+  // ── CANCEL CONFIRM FLOW ───────────────────────────────────────────────────
   if (ctx.pendingCancelAppointmentId && incoming.kind === "interactive") {
     if (incoming.id === "cn_yes") {
       const id = ctx.pendingCancelAppointmentId;
@@ -425,6 +484,7 @@ export async function handleConversationMessage(
     }
   }
 
+  // ── BOOKED STATE ───────────────────────────────────────────────────────────
   if (state === "BOOKED") {
     const apt = await findActiveAppointment(salonId, customerPhone);
     if (apt) {
@@ -438,47 +498,74 @@ export async function handleConversationMessage(
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
           toE164: customerPhone,
-          body: `${detail}\n\nSend HELP for commands.`,
+          body: `${detail}\n\nSend *hi* to make a new booking or HELP for commands.`,
         })
       );
     } else {
       await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-      await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, {
-          toE164: customerPhone,
-          body: `Hi! Welcome to ${salon.name}. Let's pick your services — sending the menu now.`,
-        })
-      );
-      await startIdleFlow(salon, customerPhone);
+      await sendWelcomeMenu(salon, customerPhone);
     }
     return;
   }
 
-  const servicesInput =
-    incoming.kind === "interactive" && incoming.id.startsWith("svc_")
-      ? incoming.id
-      : userText;
-
+  // ── STATE MACHINE ──────────────────────────────────────────────────────────
   switch (state) {
     case "IDLE":
-      await startIdleFlow(salon, customerPhone);
-      return;
-    case "SELECTING_SERVICES":
-      await handleSelectingServices(salon, customerPhone, servicesInput, ctx);
+      await handleIdleInput(salon, customerPhone, userText, incoming, ctx);
       return;
     case "SELECTING_DATE":
-      await handleSelectingDate(salon, customerPhone, userText, ctx);
+      await handleSelectingDate(salon, customerPhone, userText, incoming, ctx);
       return;
     case "SELECTING_SESSION":
       await handleSelectingSession(salon, customerPhone, userText, incoming, ctx);
+      return;
+    case "SELECTING_SERVICES":
+      await handleSelectingServices(salon, customerPhone, userText, incoming, ctx);
       return;
     case "CONFIRMING_NAME":
       await handleConfirmingName(salon, customerPhone, userText, ctx);
       return;
     default:
+      await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
       await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-      await startIdleFlow(salon, customerPhone);
+      await sendWelcomeMenu(salon, customerPhone);
   }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// SEND HELPERS
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sends the welcome menu with Book Appointment and Check Services buttons.
+ */
+async function sendWelcomeMenu(salon: SalonRow, customerPhone: string) {
+  await sendAuth(salon, (pid, tok) =>
+    sendWhatsAppButtons(pid, tok, {
+      toE164: customerPhone,
+      bodyText: `👋 Welcome to *${salon.name}*!\n\nWhat would you like to do?`,
+      buttons: [
+        { id: "btn_book", title: "📅 Book Appointment" },
+        { id: "btn_services", title: "💇 Services & Prices" },
+      ],
+    })
+  );
+}
+
+/**
+ * Sends the date selection buttons (Today / Tomorrow).
+ */
+async function sendDateMenu(salon: SalonRow, customerPhone: string) {
+  await sendAuth(salon, (pid, tok) =>
+    sendWhatsAppButtons(pid, tok, {
+      toE164: customerPhone,
+      bodyText: "📅 When would you like to book?",
+      buttons: [
+        { id: "btn_today", title: "Today" },
+        { id: "btn_tomorrow", title: "Tomorrow" },
+      ],
+    })
+  );
 }
 
 async function sendServiceCatalog(salon: SalonRow, to: string) {
@@ -494,7 +581,7 @@ async function sendServiceCatalog(salon: SalonRow, to: string) {
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: to,
-      body: `*Services*\n${lines.length ? lines.join("\n") : "No services yet."}`,
+      body: `*Services & Prices*\n${lines.length ? lines.join("\n") : "No services yet."}`,
     })
   );
 }
@@ -521,7 +608,160 @@ async function sendWorkingHoursSummary(salon: SalonRow, to: string) {
   );
 }
 
-async function startIdleFlow(salon: SalonRow, customerPhone: string) {
+// ────────────────────────────────────────────────────────────────────────────
+// STATE HANDLERS
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * IDLE: User tapped Book or Services from the welcome menu.
+ */
+async function handleIdleInput(
+  salon: SalonRow,
+  customerPhone: string,
+  userText: string,
+  incoming: IncomingParsed,
+  ctx: Ctx
+) {
+  const id = incoming.kind === "interactive" ? incoming.id : "";
+
+  if (id === "btn_services") {
+    await sendServiceCatalog(salon, customerPhone);
+    // Stay in IDLE so they can still tap Book
+    return;
+  }
+
+  if (id === "btn_book" || userText.toUpperCase() === "BOOK") {
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {});
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  // Unknown input in IDLE — re-show the menu
+  await sendWelcomeMenu(salon, customerPhone);
+}
+
+/**
+ * SELECTING_DATE: Customer picks today or tomorrow (buttons or text).
+ */
+async function handleSelectingDate(
+  salon: SalonRow,
+  customerPhone: string,
+  userText: string,
+  incoming: IncomingParsed,
+  ctx: Ctx
+) {
+  let day: Date | null = null;
+
+  if (incoming.kind === "interactive") {
+    if (incoming.id === "btn_today") {
+      day = resolveDateText("today");
+    } else if (incoming.id === "btn_tomorrow") {
+      day = resolveDateText("tomorrow");
+    }
+  }
+
+  if (!day) {
+    day = resolveDateText(userText);
+  }
+
+  if (!day) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Please choose Today or Tomorrow to continue.",
+      })
+    );
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  // Check which sessions are available (no 24h restriction — allow same-day)
+  // We pass a dummy duration of 30 min just to check windows; actual duration checked after services
+  await purgeExpiredPendingAppointments(salon.id);
+  const windowRes = await getAvailableWindows(salon.id, day, 30, true /* bypass lead time */);
+
+  if (!windowRes.ok) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
+    );
+    return;
+  }
+
+  const availableWindows = windowRes.windows.filter((w) => w.status === "AVAILABLE");
+
+  if (availableWindows.length === 0) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "No sessions available for this date. Please choose another day.",
+      })
+    );
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
+    ...ctx,
+    selectedDayIso: day.toISOString(),
+  });
+
+  const buttons = availableWindows.slice(0, 3).map((w) => ({
+    id: `session_${w.name.toLowerCase()}`,
+    title: w.name,
+  }));
+
+  const textLines = availableWindows.map((w) => `• ${w.name} (${w.range})`);
+
+  await sendAuth(salon, (pid, tok) =>
+    sendWhatsAppButtons(pid, tok, {
+      toE164: customerPhone,
+      bodyText: `Available sessions:\n${textLines.join("\n")}\n\nChoose a session:`,
+      buttons,
+    })
+  );
+}
+
+/**
+ * SELECTING_SESSION: Customer picks Morning or Evening.
+ */
+async function handleSelectingSession(
+  salon: SalonRow,
+  customerPhone: string,
+  userText: string,
+  incoming: IncomingParsed,
+  ctx: Ctx
+) {
+  let sessionChoice = "";
+  if (incoming.kind === "interactive" && incoming.id.startsWith("session_")) {
+    sessionChoice = incoming.id.replace("session_", "");
+  } else {
+    sessionChoice = userText.trim().toLowerCase();
+  }
+
+  if (sessionChoice !== "morning" && sessionChoice !== "evening") {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: 'Please choose "Morning" or "Evening".',
+      })
+    );
+    return;
+  }
+
+  // Save session choice, move to service selection
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
+    ...ctx,
+    selectedSession: sessionChoice,
+    serviceIds: [],
+  });
+
+  await sendServicesMenu(salon, customerPhone);
+}
+
+/**
+ * Sends the services selection menu.
+ */
+async function sendServicesMenu(salon: SalonRow, customerPhone: string) {
   const res = await db.query(
     "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
     [salon.id]
@@ -532,21 +772,24 @@ async function startIdleFlow(salon: SalonRow, customerPhone: string) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `${salon.name} is not accepting online bookings yet (no services).`,
+        body: `${salon.name} is not accepting online bookings yet (no services configured).`,
       })
     );
     return;
   }
 
-  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
-    serviceIds: [],
-  });
+  const catalog = services
+    .map(
+      (s, i) =>
+        `${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
+    )
+    .join("\n");
 
   if (services.length <= 10) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppList(pid, tok, {
         toE164: customerPhone,
-        bodyText: `Hi! Choose one service to begin (you can add more by sending numbers like 1,2).`,
+        bodyText: `Choose your service(s):\n\n${catalog}\n\nTap below or reply with number(s) e.g. *1* or *1,2*`,
         buttonText: "Pick service",
         sections: [
           {
@@ -560,38 +803,24 @@ async function startIdleFlow(salon: SalonRow, customerPhone: string) {
         ],
       })
     );
-    const catalog = services
-      .map(
-        (s, i) =>
-          `${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
-      )
-      .join("\n");
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: `Or reply with numbers for multiple services:\n${catalog}`,
-      })
-    );
   } else {
-    const catalog = services
-      .map(
-        (s, i) =>
-          `${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
-      )
-      .join("\n");
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `Hi! Reply with service numbers separated by commas (e.g. 1,3).\n\n${catalog}`,
+        body: `Choose your service(s) by number(s), e.g. *1* or *1,2*:\n\n${catalog}`,
       })
     );
   }
 }
 
+/**
+ * SELECTING_SERVICES: Customer picks services, then we freeze a slot and ask for name.
+ */
 async function handleSelectingServices(
   salon: SalonRow,
   customerPhone: string,
   body: string,
+  incoming: IncomingParsed,
   ctx: Ctx
 ) {
   const res = await db.query(
@@ -606,9 +835,10 @@ async function handleSelectingServices(
   }
 
   const selected = new Set<string>(ctx.serviceIds ?? []);
+  const inputBody = incoming.kind === "interactive" ? incoming.id : body;
 
-  if (body.startsWith("svc_")) {
-    const id = body.replace("svc_", "");
+  if (inputBody.startsWith("svc_")) {
+    const id = inputBody.replace("svc_", "");
     if (services.some((s) => s.id === id)) {
       selected.add(id);
     }
@@ -625,7 +855,7 @@ async function handleSelectingServices(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Please pick at least one service (numbers like 1 or 1,2).",
+        body: "Please pick at least one service (e.g. reply *1* or *1,2*).",
       })
     );
     return;
@@ -635,21 +865,295 @@ async function handleSelectingServices(
   const totalDur = list.reduce((a, s) => a + s.duration_minutes, 0);
   const totalPrice = list.reduce((a, s) => a + Number(s.price), 0);
 
-  const summary =
-    list.map((s) => `• ${s.name}`).join("\n") +
-    `\n\nTotal: ${totalDur} min · ₹${totalPrice.toFixed(2)}`;
+  // Now validate slot availability with actual duration
+  const dayIso = ctx.selectedDayIso;
+  const sessionChoice = ctx.selectedSession;
+  if (!dayIso || !sessionChoice) {
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await sendWelcomeMenu(salon, customerPhone);
+    return;
+  }
+  const day = parseISO(dayIso);
 
-  await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", {
-    serviceIds: Array.from(selected),
-  });
+  await purgeExpiredPendingAppointments(salon.id);
+  const windowRes = await getAvailableWindows(salon.id, day, totalDur, true);
+  if (!windowRes.ok) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
+    );
+    return;
+  }
+
+  const selectedWindow = windowRes.windows.find((w) => w.name.toLowerCase() === sessionChoice);
+  if (!selectedWindow || selectedWindow.status !== "AVAILABLE") {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: `The ${sessionChoice} session is no longer available for your selected services. Please pick another time.`,
+      })
+    );
+    // Go back to session selection
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
+      ...ctx,
+      serviceIds: Array.from(selected),
+    });
+    const avail = windowRes.windows.filter((w) => w.status === "AVAILABLE");
+    const buttons = avail.slice(0, 3).map((w) => ({
+      id: `session_${w.name.toLowerCase()}`,
+      title: w.name,
+    }));
+    const textLines = avail.map((w) => `• ${w.name} (${w.range})`);
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppButtons(pid, tok, {
+        toE164: customerPhone,
+        bodyText: `Available sessions:\n${textLines.join("\n")}\n\nChoose a session:`,
+        buttons,
+      })
+    );
+    return;
+  }
+
+  // Compute the assigned start time using staff assignment or queue logic
+  const staffResult = await assignStaff(
+    salon.id,
+    Array.from(selected),
+    selectedWindow.startUtc,
+    totalDur
+  );
+
+  let assignedStartUtc: Date;
+  let assignedStaffId: string | undefined;
+  let assignedStaffName: string | undefined;
+
+  if (staffResult) {
+    assignedStartUtc = staffResult.assignedStartUtc;
+    assignedStaffId = staffResult.staffId;
+    assignedStaffName = staffResult.staffName;
+  } else {
+    // No staff — use salon-level queue: find latest end_time in this session window
+    const busyRes = await db.query(
+      `SELECT end_time FROM public.appointments 
+       WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+       AND start_time >= $2 AND start_time < $3 
+       ORDER BY end_time DESC LIMIT 1`,
+      [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
+    );
+    assignedStartUtc = selectedWindow.startUtc;
+    if (busyRes.rows.length > 0) {
+      const lastEndTime = parseISO(busyRes.rows[0].end_time);
+      assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
+    }
+  }
+
+  const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
+
+  // ── FREEZE THE SLOT ─────────────────────────────────────────────────────────
+  // Release any previous frozen slot first
+  await releaseFrozenSlot(salon.id, customerPhone, ctx.frozenAppointmentId);
+
+  // We need a placeholder customer record to satisfy the FK; get or create anonymous entry
+  let customerId: string;
+  try {
+    const existing = await db.query(
+      "SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1",
+      [salon.id, customerPhone]
+    );
+    if (existing.rows.length > 0) {
+      customerId = existing.rows[0].id;
+    } else {
+      const created = await db.query(
+        "INSERT INTO public.customers (salon_id, phone, name) VALUES ($1, $2, $3) RETURNING id",
+        [salon.id, customerPhone, ""]
+      );
+      customerId = created.rows[0].id;
+    }
+
+    const frozenInsert = await db.query(
+      `INSERT INTO public.appointments 
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, staff_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
+      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedStaffId ?? null]
+    );
+    const frozenId: string = frozenInsert.rows[0].id;
+
+    // Insert appointment_services for the frozen record too
+    for (const svc of list) {
+      await db.query(
+        `INSERT INTO public.appointment_services (appointment_id, service_id, price_at_booking, duration_at_booking) 
+         VALUES ($1, $2, $3, $4)`,
+        [frozenId, svc.id, Number(svc.price), svc.duration_minutes]
+      );
+    }
+
+    // Save frozen appointment id in context, move to name confirmation
+    await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
+      ...ctx,
+      serviceIds: Array.from(selected),
+      slotStarts: [assignedStartUtc.toISOString()],
+      selectedSlotIndex: 1,
+      assignedStaffId,
+      assignedStaffName,
+      frozenAppointmentId: frozenId,
+    });
+
+    const localStart = toZonedTime(assignedStartUtc, SALON_TIMEZONE);
+    const timeStr = format(localStart, "hh:mm a");
+    const svcSummary = list.map((s) => `• ${s.name}`).join("\n");
+    const staffLine = assignedStaffName
+      ? `with *${assignedStaffName}*`
+      : ``;
+
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body:
+          `✅ *Your slot is reserved!*\n\n` +
+          `${svcSummary}\n\n` +
+          `🕐 *${timeStr}* (${SALON_TIMEZONE}) ${staffLine}\n` +
+          `💰 Total: ₹${totalPrice.toFixed(2)} | ${totalDur} min\n\n` +
+          `What's your name for the booking?`,
+      })
+    );
+  } catch (err: any) {
+    console.error("[conversation] freeze slot error", err.message);
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Could not reserve your slot. Please try again.",
+      })
+    );
+  }
+}
+
+/**
+ * CONFIRMING_NAME: Customer provides their name to finalise the booking.
+ * Upgrades the frozen pending appointment to confirmed.
+ */
+async function handleConfirmingName(
+  salon: SalonRow,
+  customerPhone: string,
+  body: string,
+  ctx: Ctx
+) {
+  const name = body.trim();
+  if (name.length < 2) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Please send your full name to confirm the booking.",
+      })
+    );
+    return;
+  }
+
+  const frozenId = ctx.frozenAppointmentId;
+  if (!frozenId) {
+    // No frozen slot — restart
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Something went wrong. Let's start over.",
+      })
+    );
+    await sendWelcomeMenu(salon, customerPhone);
+    return;
+  }
+
+  // Verify the frozen appointment still exists and is still pending (not expired/taken)
+  const checkRes = await db.query(
+    `SELECT id, start_time, end_time, total_duration_minutes, total_price, staff_id 
+     FROM public.appointments WHERE id = $1 AND salon_id = $2 AND status = 'pending' LIMIT 1`,
+    [frozenId, salon.id]
+  );
+
+  if (checkRes.rows.length === 0) {
+    // Slot expired or was taken by someone else
+    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Sorry, your reserved slot has expired. Let's start over and pick a new time.",
+      })
+    );
+    await sendWelcomeMenu(salon, customerPhone);
+    return;
+  }
+
+  const apt = checkRes.rows[0];
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Update customer name
+    await client.query(
+      "UPDATE public.customers SET name = $1 WHERE salon_id = $2 AND phone = $3",
+      [name, salon.id, customerPhone]
+    );
+
+    // Confirm the frozen appointment
+    await client.query(
+      "UPDATE public.appointments SET status = 'confirmed', reminder_sent = false WHERE id = $1",
+      [frozenId]
+    );
+
+    // Insert booking notification
+    await client.query(
+      "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'new_booking', $2, false)",
+      [salon.id, frozenId]
+    );
+
+    await client.query("COMMIT");
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    client.release();
+    console.error("[conversation] confirm booking error", err.message);
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "Could not confirm your booking. Please try again.",
+      })
+    );
+    return;
+  }
+
+  client.release();
+
+  await ensureConversationRow(salon.id, customerPhone, "BOOKED", {});
+
+  // Load service rows for the confirmation message
+  const svcRes = await db.query(
+    `SELECT s.name, as2.price_at_booking, as2.duration_at_booking
+     FROM public.appointment_services as2
+     JOIN public.services s ON s.id = as2.service_id
+     WHERE as2.appointment_id = $1`,
+    [frozenId]
+  );
+
+  const local = toZonedTime(new Date(apt.start_time), SALON_TIMEZONE);
+  const when = format(local, "EEE dd MMM, hh:mm a");
+  const svcLine = svcRes.rows.map((s) => `• ${s.name}`).join("\n");
+  const staffConfirmLine = ctx.assignedStaffName ? `Staff: ${ctx.assignedStaffName}\n` : "";
 
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body: `${summary}\n\nSend your preferred date as DD/MM/YYYY, or say *today* or *tomorrow*.`,
+      body:
+        `✅ *Booking confirmed!*\n\n` +
+        `${svcLine}\n` +
+        `📅 ${when} (${SALON_TIMEZONE})\n` +
+        `${staffConfirmLine}` +
+        `💰 Total: ₹${Number(apt.total_price).toFixed(2)}\n` +
+        `👤 Name: ${name}\n\n` +
+        `Send HELP anytime or *hi* to make another booking.`,
     })
   );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// DATE RESOLVER
+// ────────────────────────────────────────────────────────────────────────────
 
 function resolveDateText(body: string): Date | null {
   const t = body.trim().toLowerCase();
@@ -663,346 +1167,4 @@ function resolveDateText(body: string): Date | null {
     return d;
   }
   return parseDdMmYyyyKolkata(body);
-}
-
-async function handleSelectingDate(
-  salon: SalonRow,
-  customerPhone: string,
-  body: string,
-  ctx: Ctx
-) {
-  const ids = ctx.serviceIds ?? [];
-  if (ids.length === 0) {
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await startIdleFlow(salon, customerPhone);
-    return;
-  }
-
-  // Load selected services directly via SQL parameterized array mapping
-  const res = await db.query(
-    "SELECT duration_minutes, price FROM public.services WHERE id = ANY($1::uuid[])",
-    [ids]
-  );
-  const services = res.rows;
-
-  const totalDur = services.reduce((a, s) => a + s.duration_minutes, 0);
-  const day = resolveDateText(body);
-
-  if (!day) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Invalid date. Use DD/MM/YYYY or today / tomorrow.",
-      })
-    );
-    return;
-  }
-
-  const windowRes = await getAvailableWindows(salon.id, day, totalDur);
-  if (!windowRes.ok) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
-    );
-    return;
-  }
-
-  const availableWindows = windowRes.windows.filter((w) => w.status === "AVAILABLE");
-
-  if (availableWindows.length === 0) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "No sessions available for this date. Please try another date.",
-      })
-    );
-    return;
-  }
-
-  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
-    ...ctx,
-    selectedDayIso: day.toISOString(),
-  });
-
-  const buttons = availableWindows.map((w) => ({
-    id: `session_${w.name.toLowerCase()}`,
-    title: w.name,
-  }));
-
-  const textLines = availableWindows.map((w) => `• ${w.name} (${w.range})`);
-
-  await sendAuth(salon, (pid, tok) =>
-    sendWhatsAppButtons(pid, tok, {
-      toE164: customerPhone,
-      bodyText: `Available sessions:\n${textLines.join("\n")}\n\nTap a session or reply with "Morning" or "Evening".`,
-      buttons,
-    })
-  );
-}
-
-async function handleSelectingSession(
-  salon: SalonRow,
-  customerPhone: string,
-  body: string,
-  incoming: IncomingParsed,
-  ctx: Ctx
-) {
-  const dayIso = ctx.selectedDayIso;
-  if (!dayIso) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Something went wrong. Let's start over.",
-      })
-    );
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await startIdleFlow(salon, customerPhone);
-    return;
-  }
-  const day = parseISO(dayIso);
-
-  let sessionChoice = "";
-  if (incoming.kind === "interactive" && incoming.id.startsWith("session_")) {
-    sessionChoice = incoming.id.replace("session_", "");
-  } else {
-    sessionChoice = body.trim().toLowerCase();
-  }
-
-  if (sessionChoice !== "morning" && sessionChoice !== "evening") {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: 'Please choose "Morning" or "Evening".',
-      })
-    );
-    return;
-  }
-
-  const ids = ctx.serviceIds ?? [];
-  const res = await db.query(
-    "SELECT duration_minutes FROM public.services WHERE id = ANY($1::uuid[])",
-    [ids]
-  );
-  const services = res.rows;
-  const totalDur = services.reduce((a, s) => a + s.duration_minutes, 0);
-
-  const windowRes = await getAvailableWindows(salon.id, day, totalDur);
-  if (!windowRes.ok) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: windowRes.reason })
-    );
-    return;
-  }
-
-  const selectedWindow = windowRes.windows.find((w) => w.name.toLowerCase() === sessionChoice);
-  if (!selectedWindow || selectedWindow.status !== "AVAILABLE") {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "That session is no longer available. Please pick another one or try a different date.",
-      })
-    );
-    return;
-  }
-
-  // Use smart staff assignment: closest slot, specialists before generalists
-  const staffResult = await assignStaff(
-    salon.id,
-    ids,
-    selectedWindow.startUtc,
-    totalDur
-  );
-
-  let assignedStartUtc: Date;
-  let assignedStaffId: string | undefined;
-  let assignedStaffName: string | undefined;
-
-  if (staffResult) {
-    // Staff found — use their computed available start
-    assignedStartUtc = staffResult.assignedStartUtc;
-    assignedStaffId = staffResult.staffId;
-    assignedStaffName = staffResult.staffName;
-  } else {
-    // No staff configured / none can do the services — fall back to salon-level queue
-    const busyRes = await db.query(
-      `SELECT end_time FROM public.appointments 
-       WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
-       AND start_time >= $2 AND start_time < $3 
-       ORDER BY end_time DESC LIMIT 1`,
-      [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
-    );
-    const busyRows = busyRes.rows;
-    assignedStartUtc = selectedWindow.startUtc;
-    if (busyRows && busyRows.length > 0) {
-      const lastEndTime = parseISO(busyRows[0].end_time);
-      assignedStartUtc = addMinutes(lastEndTime, APPOINTMENT_BUFFER_MINUTES);
-    }
-  }
-
-  await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
-    ...ctx,
-    slotStarts: [assignedStartUtc.toISOString()],
-    selectedSlotIndex: 1,
-    assignedStaffId,
-    assignedStaffName,
-  });
-
-  const localStart = toZonedTime(assignedStartUtc, SALON_TIMEZONE);
-  const timeStr = format(localStart, "hh:mm a");
-
-  const staffLine = assignedStaffName
-    ? `Your appointment is with *${assignedStaffName}*`
-    : `You've been added to the queue`;
-
-  await sendAuth(salon, (pid, tok) =>
-    sendWhatsAppText(pid, tok, {
-      toE164: customerPhone,
-      body: `${staffLine} at *${timeStr}* (${SALON_TIMEZONE}). What's your name for the booking?`,
-    })
-  );
-}
-
-async function handleConfirmingName(
-  salon: SalonRow,
-  customerPhone: string,
-  body: string,
-  ctx: Ctx
-) {
-  const name = body.trim();
-  if (name.length < 2) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Please send your full name.",
-      })
-    );
-    return;
-  }
-
-  const ids = ctx.serviceIds ?? [];
-  const slotIdx = ctx.selectedSlotIndex;
-  const starts = ctx.slotStarts ?? [];
-  if (!ids.length || !slotIdx || !starts[slotIdx - 1]) {
-    await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Something went wrong. Let's start over — sending services.",
-      })
-    );
-    await startIdleFlow(salon, customerPhone);
-    return;
-  }
-
-  const startIso = starts[slotIdx - 1];
-  const startTime = parseISO(startIso);
-
-  const svcRes = await db.query(
-    "SELECT id, name, duration_minutes, price FROM public.services WHERE id = ANY($1::uuid[])",
-    [ids]
-  );
-  const svcRows = svcRes.rows;
-  if (!svcRows.length) {
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Could not load services. Try again later.",
-      })
-    );
-    return;
-  }
-
-  const totalDur = svcRows.reduce((a, s) => a + s.duration_minutes, 0);
-  const totalPrice = svcRows.reduce((a, s) => a + Number(s.price), 0);
-  const endTime = addMinutes(startTime, totalDur + APPOINTMENT_BUFFER_MINUTES);
-
-  // Database Connection for Transaction
-  const client = await db.pool.connect();
-  let customerId = "";
-
-  try {
-    await client.query("BEGIN");
-
-    // 1. Get or create customer inside transaction
-    const existing = await client.query(
-      "SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1",
-      [salon.id, customerPhone]
-    );
-
-    if (existing.rows.length > 0) {
-      customerId = existing.rows[0].id;
-      await client.query(
-        "UPDATE public.customers SET name = $1 WHERE id = $2",
-        [name, customerId]
-      );
-    } else {
-      const created = await client.query(
-        "INSERT INTO public.customers (salon_id, phone, name) VALUES ($1, $2, $3) RETURNING id",
-        [salon.id, customerPhone, name]
-      );
-      customerId = created.rows[0].id;
-    }
-
-    // 2. Insert Appointment (with staff_id if assigned)
-    const staffId = ctx.assignedStaffId ?? null;
-    const aptInsert = await client.query(
-      `INSERT INTO public.appointments 
-       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, staff_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false, $7) RETURNING id`,
-      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDur, totalPrice, staffId]
-    );
-    const appointmentId = aptInsert.rows[0].id;
-
-    // 3. Insert Appointment Services
-    for (const s of svcRows) {
-      await client.query(
-        `INSERT INTO public.appointment_services (appointment_id, service_id, price_at_booking, duration_at_booking) 
-         VALUES ($1, $2, $3, $4)`,
-        [appointmentId, s.id, Number(s.price), s.duration_minutes]
-      );
-    }
-
-    // 4. Insert Notification
-    await client.query(
-      "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'new_booking', $2, false)",
-      [salon.id, appointmentId]
-    );
-
-    await client.query("COMMIT");
-  } catch (err: any) {
-    await client.query("ROLLBACK");
-    client.release();
-    console.error("[conversation] booking transaction failed", err.message);
-    await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, {
-        toE164: customerPhone,
-        body: "Could not create booking. Try another slot.",
-      })
-    );
-    return;
-  }
-  
-  client.release();
-
-  await ensureConversationRow(salon.id, customerPhone, "BOOKED", {});
-
-  const local = toZonedTime(startTime, SALON_TIMEZONE);
-  const when = format(local, "EEE dd MMM, hh:mm a");
-  const svcLine = svcRows.map((s) => `• ${s.name}`).join("\n");
-  const staffConfirmLine = ctx.assignedStaffName
-    ? `Staff: ${ctx.assignedStaffName}\n`
-    : "";
-
-  await sendAuth(salon, (pid, tok) =>
-    sendWhatsAppText(pid, tok, {
-      toE164: customerPhone,
-      body:
-        `✅ *Booking confirmed*\n` +
-        `${svcLine}\n` +
-        `When: ${when} (${SALON_TIMEZONE})\n` +
-        `${staffConfirmLine}` +
-        `Total: ₹${totalPrice.toFixed(2)}\n` +
-        `Name: ${name}\n\n` +
-        `Send HELP anytime.`,
-    })
-  );
 }

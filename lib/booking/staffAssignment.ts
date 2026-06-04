@@ -87,25 +87,42 @@ export async function assignStaff(
     let bestStart: Date = new Date(8640000000000000); // sentinel: very far future
 
     for (const staff of qualifying) {
-      // Find latest appointment for this staff that ends after chainEnd
-      const busyRes = await db.query<{ end_time: string }>(
-        `SELECT end_time
+      // Fetch all appointments for this staff within the next 24 hours
+      const busyRes = await db.query<{ start_time: string; end_time: string }>(
+        `SELECT start_time, end_time
          FROM public.appointments
          WHERE salon_id = $1
-           AND staff_id  = $2
+           AND staff_id = $2
            AND status IN ('pending', 'confirmed')
-           AND end_time  > $3
-         ORDER BY end_time DESC
-         LIMIT 1`,
-        [salonId, staff.id, chainEnd.toISOString()]
+           AND end_time > $3
+           AND start_time < $4
+         ORDER BY start_time ASC`,
+        [
+          salonId,
+          staff.id,
+          chainEnd.toISOString(),
+          addMinutes(chainEnd, 24 * 60).toISOString(),
+        ]
       );
 
-      // Staff is available at chainEnd unless they have a later commitment
-      let availableAt: Date = chainEnd;
-      if (busyRes.rows.length > 0) {
-        const lastEnd = new Date(busyRes.rows[0].end_time);
-        const afterBuffer = addMinutes(lastEnd, APPOINTMENT_BUFFER_MINUTES);
-        if (afterBuffer > chainEnd) availableAt = afterBuffer;
+      let availableAt = new Date(chainEnd);
+      const requiredDurMinutes = (durationOf.get(serviceId) ?? 0) + APPOINTMENT_BUFFER_MINUTES;
+      const requiredDurMs = requiredDurMinutes * 60000;
+
+      for (const row of busyRes.rows) {
+        const aptStart = new Date(row.start_time);
+        const aptEnd = new Date(row.end_time);
+
+        // Does the gap between availableAt and this appointment's start fit our service?
+        if (aptStart.getTime() - availableAt.getTime() >= requiredDurMs) {
+          break; // We found a gap big enough before this appointment!
+        }
+
+        // Cannot fit before this appointment, so our earliest possible start is after it
+        const possibleNextStart = addMinutes(aptEnd, APPOINTMENT_BUFFER_MINUTES);
+        if (possibleNextStart > availableAt) {
+          availableAt = possibleNextStart;
+        }
       }
 
       // Pick the staff with the EARLIEST available slot

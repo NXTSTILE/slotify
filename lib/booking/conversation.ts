@@ -800,9 +800,13 @@ async function handleSelectingSession(
 }
 
 /**
- * Sends the services selection menu.
+ * Sends the services selection menu, optionally showing already-selected services.
  */
-async function sendServicesMenu(salon: SalonRow, customerPhone: string) {
+async function sendServicesMenu(
+  salon: SalonRow,
+  customerPhone: string,
+  alreadySelectedIds: string[] = []
+) {
   const res = await db.query(
     "SELECT id, name, duration_minutes, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
     [salon.id]
@@ -821,23 +825,29 @@ async function sendServicesMenu(salon: SalonRow, customerPhone: string) {
 
   const catalog = services
     .map(
-      (s, i) =>
-        `${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`
+      (s, i) => {
+        const tick = alreadySelectedIds.includes(s.id) ? "✅ " : "";
+        return `${tick}${i + 1}. ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`;
+      }
     )
     .join("\n");
+
+  const selectedNote = alreadySelectedIds.length
+    ? `\n\n*Selected: ${alreadySelectedIds.length} service(s)*\nTap another to add, or reply *done* to confirm.`
+    : `\n\nTap a service or reply with number(s) e.g. *1* or *1,2*`;
 
   if (services.length <= 10) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppList(pid, tok, {
         toE164: customerPhone,
-        bodyText: `Choose your service(s):\n\n${catalog}\n\nTap below or reply with number(s) e.g. *1* or *1,2*`,
+        bodyText: `Choose your service(s):\n\n${catalog}${selectedNote}`,
         buttonText: "Pick service",
         sections: [
           {
             title: "Services",
             rows: services.map((s, i) => ({
               id: `svc_${s.id}`,
-              title: `${i + 1}. ${s.name}`.slice(0, 24),
+              title: `${alreadySelectedIds.includes(s.id) ? "✅ " : ""}${i + 1}. ${s.name}`.slice(0, 24),
               description: `${s.duration_minutes}m · ₹${Number(s.price).toFixed(0)}`.slice(0, 72),
             })),
           },
@@ -848,7 +858,7 @@ async function sendServicesMenu(salon: SalonRow, customerPhone: string) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `Choose your service(s) by number(s), e.g. *1* or *1,2*:\n\n${catalog}`,
+        body: `Choose your service(s) by number(s), e.g. *1* or *1,2*:\n\n${catalog}${selectedNote}`,
       })
     );
   }
@@ -856,6 +866,13 @@ async function sendServicesMenu(salon: SalonRow, customerPhone: string) {
 
 /**
  * SELECTING_SERVICES: Customer picks services, then we freeze a slot and ask for name.
+ *
+ * Flow for interactive taps (WhatsApp list — one item at a time):
+ *   Each svc_ tap adds to the basket and shows Confirm / Add-more buttons.
+ *   confirm_services (or text "done"/"ok") triggers the booking.
+ *
+ * Flow for text input (e.g. "1,2"):
+ *   All services are selected at once and the booking proceeds immediately.
  */
 async function handleSelectingServices(
   salon: SalonRow,
@@ -877,13 +894,68 @@ async function handleSelectingServices(
 
   const selected = new Set<string>(ctx.serviceIds ?? []);
   const inputBody = incoming.kind === "interactive" ? incoming.id : body;
+  const isInteractiveTap = inputBody.startsWith("svc_");
+  const isConfirm =
+    (incoming.kind === "interactive" && incoming.id === "confirm_services") ||
+    ["done", "ok", "confirm", "yes"].includes(body.trim().toLowerCase());
 
-  if (inputBody.startsWith("svc_")) {
+  // ── INTERACTIVE LIST TAP (one service at a time) ────────────────────────────
+  if (isInteractiveTap) {
     const id = inputBody.replace("svc_", "");
-    if (services.some((s) => s.id === id)) {
-      selected.add(id);
+    const validService = services.find((s) => s.id === id);
+    if (validService) {
+      // Toggle: tap again to deselect
+      if (selected.has(id)) {
+        selected.delete(id);
+      } else {
+        selected.add(id);
+      }
     }
-  } else {
+
+    // Save accumulated selection and show confirm/add-more prompt
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICES", {
+      ...ctx,
+      serviceIds: Array.from(selected),
+    });
+
+    if (selected.size === 0) {
+      // Nothing selected yet — re-show the menu
+      await sendServicesMenu(salon, customerPhone, []);
+      return;
+    }
+
+    // Build summary of selected services
+    const selectedList = services.filter((s) => selected.has(s.id));
+    const summary = selectedList
+      .map((s) => `• ${s.name} — ${s.duration_minutes} min — ₹${Number(s.price).toFixed(2)}`)
+      .join("\n");
+    const totalDur = selectedList.reduce((a, s) => a + s.duration_minutes, 0);
+    const totalPrice = selectedList.reduce((a, s) => a + Number(s.price), 0);
+
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppButtons(pid, tok, {
+        toE164: customerPhone,
+        bodyText:
+          `*Selected services:*\n${summary}\n\n` +
+          `Total: ${totalDur} min · ₹${totalPrice.toFixed(2)}\n\n` +
+          `Add another service or confirm your selection.`,
+        buttons: [
+          { id: "confirm_services", title: "✅ Confirm" },
+          { id: "add_more_services", title: "➕ Add more" },
+        ],
+      })
+    );
+    return;
+  }
+
+  // ── ADD MORE button ─────────────────────────────────────────────────────────
+  if (incoming.kind === "interactive" && incoming.id === "add_more_services") {
+    await sendServicesMenu(salon, customerPhone, Array.from(selected));
+    return;
+  }
+
+  // ── TEXT INPUT (e.g. "1,2" or "1") — selects all at once and falls through ──
+  if (!isConfirm && !isInteractiveTap && incoming.kind === "text") {
     const parts = body.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
     for (const p of parts) {
       const n = Number(p);
@@ -892,6 +964,7 @@ async function handleSelectingServices(
     }
   }
 
+  // ── CONFIRM (or text path with selections) ──────────────────────────────────
   if (selected.size === 0) {
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
@@ -899,6 +972,7 @@ async function handleSelectingServices(
         body: "Please pick at least one service (e.g. reply *1* or *1,2*).",
       })
     );
+    await sendServicesMenu(salon, customerPhone, []);
     return;
   }
 

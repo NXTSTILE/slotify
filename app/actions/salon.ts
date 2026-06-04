@@ -581,23 +581,28 @@ export async function addWalkInBookingAction(formData: FormData) {
     // 4a. Smart staff assignment — each staff member is checked independently.
     //     requestedStart = NOW so each staff's earliest free slot from this moment is found.
     //     If staff B is free from 9:00 AM and staff A is busy until 10:00, staff B gets 9:00.
-    const now = new Date();
-    const requestedStart = addMinutes(now, 2); // 2-min grace for walk-in
-
     const staffResult = await assignStaff(
       salon.id,
       serviceIds,
-      requestedStart,
+      addMinutes(new Date(), 2), // use a fresh "now" for the initial search window
       totalDuration
     );
+
+    // Re-sample "now" RIGHT HERE — after all async DB work — so the stored start_time
+    // is never stale from before assignStaff's round-trips completed.
+    const now = new Date();
+    const requestedStart = addMinutes(now, 2); // 2-min grace for walk-in
 
     // If staff found, use their computed available start; otherwise queue after the salon's latest end
     let startTime: Date;
     const staffId = staffResult?.staffId ?? null;
 
     if (staffResult) {
-      // Staff's own next available slot (independent of other staff)
-      startTime = staffResult.assignedStartUtc;
+      // Use staff's own next available slot, but ensure it's not in the past
+      // (re-anchor to fresh now if assignStaff took long enough to make it stale)
+      startTime = staffResult.assignedStartUtc < requestedStart
+        ? requestedStart
+        : staffResult.assignedStartUtc;
     } else {
       // No staff configured — fall back to salon-level queue
       const lastAptRes = await client.query(

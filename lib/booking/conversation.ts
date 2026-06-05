@@ -752,21 +752,55 @@ async function handleSelectingDate(
     return;
   }
 
-  // Save the date and immediately show Morning / Evening buttons.
-  // No availability check here — we do that when the session is actually chosen.
+  // Pre-fetch windows to show ranges and validate date
+  await purgeExpiredPendingAppointments(salon.id);
+  const windowRes = await getAvailableWindows(salon.id, day, 15, true);
+
+  if (!windowRes.ok) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: `⚠️ ${windowRes.reason} Please select another date.`,
+      })
+    );
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  const availWindows = windowRes.windows.filter(w => w.status === "AVAILABLE");
+  
+  if (availWindows.length === 0) {
+    await sendAuth(salon, (pid, tok) =>
+      sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: `⚠️ All sessions are fully booked for this date. Please select another date.`,
+      })
+    );
+    await sendDateMenu(salon, customerPhone);
+    return;
+  }
+
+  // Save the date
   await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
     ...ctx,
     selectedDayIso: day.toISOString(),
   });
 
+  const rangesText = availWindows.map(w => {
+    const icon = w.name === "Morning" ? "🌅" : "🌆";
+    return `${icon} *${w.name}:* ${w.range}`;
+  }).join("\n");
+
+  const buttons = availWindows.map(w => {
+    const icon = w.name === "Morning" ? "🌅" : "🌆";
+    return { id: `session_${w.name.toLowerCase()}`, title: `${icon} ${w.name}` };
+  });
+
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `Perfect! Which session works best for you?`,
-      buttons: [
-        { id: "session_morning", title: "🌅 Morning" },
-        { id: "session_evening", title: "🌆 Evening" },
-      ],
+      bodyText: `Perfect! Which session works best for you?\n\n${rangesText}`,
+      buttons,
     })
   );
 }

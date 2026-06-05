@@ -317,15 +317,15 @@ export async function handleConversationMessage(
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
         body:
-          `*Commands*\n` +
-          `SERVICES — list services & prices\n` +
-          `LOCATION — salon address\n` +
-          `HOURS — working hours\n` +
-          `CONTACT — phone number\n` +
-          `POLICY — cancellation policy\n` +
-          `CANCEL — cancel active booking\n` +
-          `RESCHEDULE — change appointment\n` +
-          `Or send *hi* to start a booking.`,
+          `*🛠️ Help & Commands*\n\n` +
+          `*SERVICES* — 📋 List services & prices\n` +
+          `*LOCATION* — 📍 Salon address\n` +
+          `*HOURS* — 🕒 Working hours\n` +
+          `*CONTACT* — 📞 Phone number\n` +
+          `*POLICY* — 📜 Cancellation policy\n` +
+          `*CANCEL* — ❌ Cancel active booking\n` +
+          `*RESCHEDULE* — 🔄 Change appointment\n\n` +
+          `_Or simply send *hi* to start a new booking._`,
       })
     );
     return;
@@ -338,20 +338,20 @@ export async function handleConversationMessage(
   if (kw === "LOCATION") {
     const addr = [salon.address, salon.city].filter(Boolean).join(", ") || "Address not set.";
     await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `📍 ${addr}` })
+      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `📍 *Our Location:*\n${addr}` })
     );
     return;
   }
   if (kw === "CONTACT") {
     await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `📞 ${salon.phone}` })
+      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `📞 *Contact Us:*\n${salon.phone}` })
     );
     return;
   }
   if (kw === "POLICY") {
     const p = salon.cancellation_policy?.trim() || "No policy shared yet.";
     await sendAuth(salon, (pid, tok) =>
-      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `*Cancellation*\n${p}` })
+      sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `📜 *Cancellation Policy:*\n${p}` })
     );
     return;
   }
@@ -374,7 +374,7 @@ export async function handleConversationMessage(
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
           toE164: customerPhone,
-          body: "You don't have an active booking to cancel.",
+          body: "You don't have an active booking to cancel. _Send *hi* to make a new booking._",
         })
       );
       return;
@@ -386,7 +386,7 @@ export async function handleConversationMessage(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppButtons(pid, tok, {
         toE164: customerPhone,
-        bodyText: "Cancel your current appointment?",
+        bodyText: "Are you sure you want to cancel your current appointment?",
         buttons: [
           { id: "cn_yes", title: "Yes, cancel" },
           { id: "cn_no", title: "Keep it" },
@@ -442,7 +442,7 @@ export async function handleConversationMessage(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Previous booking cancelled. Let's reschedule — pick a date:",
+        body: "✅ Your previous booking has been cancelled. Let's reschedule — please pick a new date:",
       })
     );
     await sendDateMenu(salon, customerPhone);
@@ -463,7 +463,7 @@ export async function handleConversationMessage(
         pendingCancelAppointmentId: undefined,
       });
       await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "Okay, your booking stays." })
+        sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "✅ Okay, your booking has been kept." })
       );
       return;
     }
@@ -483,7 +483,7 @@ export async function handleConversationMessage(
         pendingCancelAppointmentId: undefined,
       });
       await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "Okay, your booking stays." })
+        sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "✅ Okay, your booking has been kept." })
       );
       return;
     }
@@ -503,7 +503,7 @@ export async function handleConversationMessage(
       await sendAuth(salon, (pid, tok) =>
         sendWhatsAppText(pid, tok, {
           toE164: customerPhone,
-          body: `${detail}\n\nSend *hi* to make a new booking or HELP for commands.`,
+          body: `${detail}\n\n_Send *hi* to make a new booking or *HELP* for more options._`,
         })
       );
     } else {
@@ -551,7 +551,7 @@ async function sendGenderMenu(salon: SalonRow, customerPhone: string) {
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `👋 Welcome to *${salon.name}*!\n\nTo show you the right services, are you booking for:`,
+      bodyText: `👋 Welcome to *${salon.name}*!\n\nTo help us show you the most relevant services, please select:`,
       buttons: [
         { id: "btn_male", title: "👨 Male" },
         { id: "btn_female", title: "👩 Female" },
@@ -569,7 +569,7 @@ async function sendWelcomeMenu(salon: SalonRow, customerPhone: string, gender: "
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `Great! What would you like to do?`,
+      bodyText: `Great! What would you like to do next?`,
       buttons: [
         { id: "btn_book", title: "📅 Book Appointment" },
         { id: "btn_services", title: `💇 ${genderLabel} Services` },
@@ -585,7 +585,7 @@ async function sendDateMenu(salon: SalonRow, customerPhone: string) {
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: "📅 When would you like to book?",
+      bodyText: "📅 When would you like to schedule your visit?",
       buttons: [
         { id: "btn_today", title: "Today" },
         { id: "btn_tomorrow", title: "Tomorrow" },
@@ -621,7 +621,7 @@ async function sendServiceCatalog(salon: SalonRow, to: string, gender?: "male" |
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: to,
-      body: `*Services & Prices${genderLabel}*\n${lines.length ? lines.join("\n") : "No services yet."}`,
+      body: `*📋 Services & Prices${genderLabel}*\n\n${lines.length ? lines.join("\n") : "No services available at the moment."}`,
     })
   );
 }
@@ -644,7 +644,7 @@ async function sendWorkingHoursSummary(salon: SalonRow, to: string) {
       .join("\n") || "Hours not configured.";
 
   await sendAuth(salon, (pid, tok) =>
-    sendWhatsAppText(pid, tok, { toE164: to, body: `*Hours (${SALON_TIMEZONE})*\n${text}` })
+    sendWhatsAppText(pid, tok, { toE164: to, body: `*🕒 Working Hours (${SALON_TIMEZONE})*\n\n${text}` })
   );
 }
 
@@ -745,7 +745,7 @@ async function handleSelectingDate(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Please choose Today or Tomorrow to continue.",
+        body: "Please select either *Today* or *Tomorrow* to continue.",
       })
     );
     await sendDateMenu(salon, customerPhone);
@@ -762,7 +762,7 @@ async function handleSelectingDate(
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppButtons(pid, tok, {
       toE164: customerPhone,
-      bodyText: `Great! Which session works for you?`,
+      bodyText: `Perfect! Which session works best for you?`,
       buttons: [
         { id: "session_morning", title: "🌅 Morning" },
         { id: "session_evening", title: "🌆 Evening" },
@@ -782,6 +782,14 @@ async function handleSelectingSession(
   incoming: IncomingParsed,
   ctx: Ctx
 ) {
+  if (
+    (incoming.kind === "interactive" && (incoming.id === "btn_today" || incoming.id === "btn_tomorrow")) ||
+    (incoming.kind === "text" && (userText.trim().toLowerCase() === "today" || userText.trim().toLowerCase() === "tomorrow"))
+  ) {
+    await handleSelectingDate(salon, customerPhone, userText, incoming, ctx);
+    return;
+  }
+
   let sessionChoice = "";
   if (incoming.kind === "interactive" && incoming.id.startsWith("session_")) {
     sessionChoice = incoming.id.replace("session_", "");
@@ -793,7 +801,7 @@ async function handleSelectingSession(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppButtons(pid, tok, {
         toE164: customerPhone,
-        bodyText: 'Please choose Morning or Evening:',
+        bodyText: 'Please select either *Morning* or *Evening*:',
         buttons: [
           { id: "session_morning", title: "🌅 Morning" },
           { id: "session_evening", title: "🌆 Evening" },
@@ -822,7 +830,7 @@ async function handleSelectingSession(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `${windowRes.reason} Please pick another date.`,
+        body: `⚠️ ${windowRes.reason} Please select another date.`,
       })
     );
     await sendDateMenu(salon, customerPhone);
@@ -853,11 +861,11 @@ async function handleSelectingSession(
           { id: "btn_tomorrow", title: "Tomorrow" },
         ];
 
-    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", { ...ctx, selectedDayIso: undefined });
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", ctx);
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppButtons(pid, tok, {
         toE164: customerPhone,
-        bodyText: `The ${sessionChoice} session is fully booked.${otherMsg}`,
+        bodyText: `⚠️ The ${sessionChoice} session is fully booked.${otherMsg}`,
         buttons,
       })
     );
@@ -909,7 +917,7 @@ async function sendServicesMenu(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `${salon.name} is not accepting online bookings yet (no services configured).`,
+        body: `⚠️ *${salon.name}* is not accepting online bookings at the moment (no services configured).`,
       })
     );
     return;
@@ -936,7 +944,7 @@ async function sendServicesMenu(
   await sendAuth(salon, (pid, tok) =>
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body: `📌 *Choose your service(s):*\n\n${catalog}${footer}`,
+      body: `📌 *Please choose your service(s):*\n\n${catalog}${footer}`,
     })
   );
 }
@@ -1016,7 +1024,7 @@ async function handleSelectingServices(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Please pick at least one service first.",
+        body: "⚠️ Please select at least one service to proceed.",
       })
     );
     await sendServicesMenu(salon, customerPhone, [], gender);
@@ -1051,7 +1059,7 @@ async function handleSelectingServices(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `The ${sessionChoice} session is no longer available for your selected services. Please pick another time.`,
+        body: `⚠️ The ${sessionChoice} session is no longer available for the selected services. Please choose another time.`,
       })
     );
     // Go back to session selection
@@ -1171,7 +1179,7 @@ async function handleSelectingServices(
     const timeStr = format(localStart, "hh:mm a");
     const svcSummary = list.map((s) => `• ${s.name}`).join("\n");
     const staffLine = assignedStaffName
-      ? `with *${assignedStaffName}*`
+      ? `👨‍💼 Staff: *${assignedStaffName}*\n`
       : ``;
 
     await sendAuth(salon, (pid, tok) =>
@@ -1179,10 +1187,13 @@ async function handleSelectingServices(
         toE164: customerPhone,
         body:
           `✅ *Your slot is reserved!*\n\n` +
-          `${svcSummary}\n\n` +
-          `🕐 *${timeStr}* (${SALON_TIMEZONE}) ${staffLine}\n` +
-          `💰 Total: ₹${totalPrice.toFixed(2)} | ${totalDur} min\n\n` +
-          `What's your name for the booking?`,
+          `*Services:*\n${svcSummary}\n\n` +
+          `*Details:*\n` +
+          `🕐 *${timeStr}* (${SALON_TIMEZONE})\n` +
+          `${staffLine}` +
+          `⏳ *${totalDur} mins*\n` +
+          `💰 *₹${totalPrice.toFixed(2)}*\n\n` +
+          `✍️ *Please reply with your full name to complete your booking:*`,
       })
     );
   } catch (err: any) {
@@ -1211,7 +1222,7 @@ async function handleConfirmingName(
     await sendAuth(salon, (pid, tok) =>
       sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: "Please send your full name to confirm the booking.",
+        body: "⚠️ *Name required*\n\nPlease reply with your full name to confirm your booking.",
       })
     );
     return;
@@ -1298,13 +1309,14 @@ async function handleConfirmingName(
     sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
       body:
-        `✅ *Booking confirmed!*\n\n` +
-        `${svcLine}\n` +
-        `📅 ${when} (${SALON_TIMEZONE})\n` +
+        `🎉 *Booking Confirmed!*\n\n` +
+        `*Services:*\n${svcLine}\n\n` +
+        `*Details:*\n` +
+        `📅 *${when}* (${SALON_TIMEZONE})\n` +
         `${staffConfirmLine}` +
-        `💰 Total: ₹${Number(apt.total_price).toFixed(2)}\n` +
-        `👤 Name: ${name}\n\n` +
-        `Send HELP anytime or *hi* to make another booking.`,
+        `💰 *₹${Number(apt.total_price).toFixed(2)}*\n` +
+        `👤 *${name}*\n\n` +
+        `_Send *HELP* anytime or *hi* to make another booking._`,
     })
   );
 }

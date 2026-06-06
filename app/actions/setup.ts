@@ -31,7 +31,7 @@ export async function createSalonSetupAction(
   try {
     // 2. Check for existing salon for this user
     const existingRes = await db.query(
-      "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+      "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
       [session.userId]
     );
     if (existingRes.rows.length > 0) {

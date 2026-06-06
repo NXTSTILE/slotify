@@ -9,7 +9,7 @@ async function requireSalon() {
   const session = await getSession();
   if (!session) throw new Error("Unauthorized");
   const result = await db.query(
-    "SELECT * FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    "SELECT * FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
   );
   const salon = result.rows[0];

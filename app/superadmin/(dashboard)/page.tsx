@@ -61,7 +61,7 @@ export default async function SuperAdminPage() {
           c.name as customer_name, 
           c.phone as customer_phone, 
           s.name as salon_name
-        FROM public.appointments a
+        FROM public.appointments a WHERE a.is_deleted = false
         LEFT JOIN public.customers c ON a.customer_id = c.id
         LEFT JOIN public.salons s ON a.salon_id = s.id
         ORDER BY a.start_time DESC

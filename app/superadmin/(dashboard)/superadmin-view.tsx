@@ -12,8 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   updateGlobalSalonAction,
   deleteGlobalSalonAction,
-  toggleUserAdminRoleAction,
-  deleteGlobalUserAction,
+  deleteGlobalAppointmentAction,
   createGlobalSalonAction,
 } from "@/app/actions/superadmin";
 import {
@@ -164,13 +163,12 @@ export function SuperAdminView({
     });
   };
 
-  const handleToggleAdmin = (id: string, email: string) => {
-    if (id === currentUserId) {
-      toast.error("You cannot revoke your own admin rights.");
+  const handleDeleteAppointment = (id: string) => {
+    if (!confirm(`Are you absolutely sure you want to delete this appointment? It will be hidden from the salon owner but the data remains.`)) {
       return;
     }
     startTransition(async () => {
-      const res = await toggleUserAdminRoleAction(id);
+      const res = await deleteGlobalAppointmentAction(id);
       if (res.success) {
         toast.success(res.message);
       } else {
@@ -179,23 +177,7 @@ export function SuperAdminView({
     });
   };
 
-  const handleDeleteUser = (id: string, email: string) => {
-    if (id === currentUserId) {
-      toast.error("You cannot delete your own account.");
-      return;
-    }
-    if (!confirm(`Are you sure you want to delete user "${email}"? This will also delete any salon they own.`)) {
-      return;
-    }
-    startTransition(async () => {
-      const res = await deleteGlobalUserAction(id);
-      if (res.success) {
-        toast.success(res.message);
-      } else {
-        toast.error(res.message);
-      }
-    });
-  };
+
 
   // Filter lists
   const filteredSalons = salons.filter(
@@ -590,25 +572,7 @@ export function SuperAdminView({
                     </td>
                     <td className="p-3">
                       <div className="flex items-center justify-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleToggleAdmin(user.id, user.email)}
-                          disabled={user.id === currentUserId}
-                          className="h-8 text-xs font-semibold px-2 hover:bg-primary/10 hover:text-primary disabled:opacity-50 disabled:hover:bg-transparent"
-                        >
-                          Toggle Admin
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => handleDeleteUser(user.id, user.email)}
-                          disabled={user.id === currentUserId}
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:opacity-50 disabled:hover:bg-transparent"
-                          title="Delete User"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        <span className="text-muted-foreground text-xs italic">Read-only</span>
                       </div>
                     </td>
                   </tr>
@@ -667,6 +631,7 @@ export function SuperAdminView({
                   <th className="p-3">Client details</th>
                   <th className="p-3 text-center">Status</th>
                   <th className="p-3 text-right">Price</th>
+                  <th className="p-3 text-center">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
@@ -703,6 +668,19 @@ export function SuperAdminView({
                       </Badge>
                     </td>
                     <td className="p-3 text-right font-bold text-foreground">₹{appt.total_price}</td>
+                    <td className="p-3">
+                      <div className="flex items-center justify-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDeleteAppointment(appt.id)}
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                          title="Delete Appointment"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
                 {filteredAppointments.length === 0 && (

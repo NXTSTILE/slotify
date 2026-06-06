@@ -22,7 +22,7 @@ export async function GET(request: Request) {
 
     const [users, salons, services, workingHours, customers, appointments, conversationStates, webhookLogs] = await Promise.all([
       db.query("SELECT id, email, is_super_admin, created_at FROM public.users ORDER BY created_at"),
-      db.query("SELECT id, name, phone, owner_id, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL AND whatsapp_access_token != '') as has_token FROM public.salons"),
+      db.query("SELECT id, name, phone, owner_id, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL AND whatsapp_access_token != '') as has_token FROM public.salons WHERE is_deleted = false"),
       db.query("SELECT id, salon_id, name, price, duration_minutes, is_active FROM public.services ORDER BY salon_id"),
       db.query("SELECT salon_id, day_of_week, open_time, close_time, is_closed FROM public.working_hours ORDER BY salon_id, day_of_week"),
       db.query("SELECT id, salon_id, phone, name FROM public.customers ORDER BY created_at DESC LIMIT 10"),

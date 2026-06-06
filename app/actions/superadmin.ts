@@ -2,29 +2,26 @@
 
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { cookies } from "next/headers";
+import { jwtVerify } from "jose";
 
 /**
  * Securely verifies that the currently logged-in user is a verified Super Admin.
  * Throws an error if not authorized.
  */
 async function verifySuperAdmin() {
-  const session = await getSession();
-  if (!session) {
-    throw new Error("Unauthorized: No active session found.");
+  const saSessionCookie = cookies().get("superadmin_session")?.value;
+  if (!saSessionCookie) {
+    throw new Error("Unauthorized: No active superadmin session found.");
   }
-
-  const userRes = await db.query(
-    "SELECT is_super_admin FROM public.users WHERE id = $1 LIMIT 1",
-    [session.userId]
-  );
-
-  const user = userRes.rows[0];
-  if (!user || !user.is_super_admin) {
-    throw new Error("Forbidden: You do not have Super Admin platform permissions.");
+  
+  try {
+    const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback-secret-for-dev");
+    await jwtVerify(saSessionCookie, JWT_SECRET, { algorithms: ['HS256'] });
+    return true;
+  } catch (e) {
+    throw new Error("Forbidden: Invalid superadmin session.");
   }
-
-  return session.userId; // Returns the logged-in superadmin's user ID
 }
 
 export type ActionResponse = {
@@ -65,7 +62,7 @@ export async function updateGlobalSalonAction(
 }
 
 /**
- * Deletes a salon from the platform.
+ * Soft-deletes a salon from the platform.
  */
 export async function deleteGlobalSalonAction(salonId: string): Promise<ActionResponse> {
   try {
@@ -75,10 +72,10 @@ export async function deleteGlobalSalonAction(salonId: string): Promise<ActionRe
       return { success: false, message: "Invalid salon ID provided." };
     }
 
-    await db.query("DELETE FROM public.salons WHERE id = $1", [salonId]);
+    await db.query("UPDATE public.salons SET is_deleted = true WHERE id = $1", [salonId]);
 
     revalidatePath("/superadmin");
-    return { success: true, message: "Salon deleted successfully." };
+    return { success: true, message: "Salon soft-deleted successfully." };
   } catch (err: any) {
     console.error("[deleteGlobalSalonAction Error]", err.message);
     return { success: false, message: err.message || "Failed to delete salon." };
@@ -86,64 +83,23 @@ export async function deleteGlobalSalonAction(salonId: string): Promise<ActionRe
 }
 
 /**
- * Toggles a user's is_super_admin privilege status.
- * Prevents a Super Admin from revoking their own admin access.
+ * Soft-deletes an appointment globally.
  */
-export async function toggleUserAdminRoleAction(targetUserId: string): Promise<ActionResponse> {
+export async function deleteGlobalAppointmentAction(appointmentId: string): Promise<ActionResponse> {
   try {
-    const currentUserId = await verifySuperAdmin();
+    await verifySuperAdmin();
 
-    if (currentUserId === targetUserId) {
-      return { success: false, message: "You cannot revoke your own Super Admin access." };
+    if (!appointmentId) {
+      return { success: false, message: "Invalid appointment ID provided." };
     }
 
-    // Fetch target user's current status
-    const targetRes = await db.query(
-      "SELECT is_super_admin FROM public.users WHERE id = $1 LIMIT 1",
-      [targetUserId]
-    );
-
-    const targetUser = targetRes.rows[0];
-    if (!targetUser) {
-      return { success: false, message: "User account not found." };
-    }
-
-    const newAdminStatus = !targetUser.is_super_admin;
-    await db.query(
-      "UPDATE public.users SET is_super_admin = $1 WHERE id = $2",
-      [newAdminStatus, targetUserId]
-    );
+    await db.query("UPDATE public.appointments SET is_deleted = true WHERE id = $1", [appointmentId]);
 
     revalidatePath("/superadmin");
-    return {
-      success: true,
-      message: `User permissions updated. Admin role ${newAdminStatus ? "granted" : "revoked"} successfully.`
-    };
+    return { success: true, message: "Appointment soft-deleted successfully." };
   } catch (err: any) {
-    console.error("[toggleUserAdminRoleAction Error]", err.message);
-    return { success: false, message: err.message || "Failed to change user permissions." };
-  }
-}
-
-/**
- * Safely deletes a user account.
- * Prevents deleting one's own account.
- */
-export async function deleteGlobalUserAction(targetUserId: string): Promise<ActionResponse> {
-  try {
-    const currentUserId = await verifySuperAdmin();
-
-    if (currentUserId === targetUserId) {
-      return { success: false, message: "You cannot delete your own account." };
-    }
-
-    await db.query("DELETE FROM public.users WHERE id = $1", [targetUserId]);
-
-    revalidatePath("/superadmin");
-    return { success: true, message: "User account deleted successfully." };
-  } catch (err: any) {
-    console.error("[deleteGlobalUserAction Error]", err.message);
-    return { success: false, message: err.message || "Failed to delete user account." };
+    console.error("[deleteGlobalAppointmentAction Error]", err.message);
+    return { success: false, message: err.message || "Failed to delete appointment." };
   }
 }
 
@@ -164,7 +120,7 @@ export async function createGlobalSalonAction(
 
     // Check if the user already owns a salon
     const checkRes = await db.query(
-      "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+      "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
       [ownerId]
     );
     if (checkRes.rows.length > 0) {

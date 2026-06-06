@@ -15,7 +15,7 @@ export default async function SetupPage() {
 
   // 2. Redirect to dashboard if salon already exists
   const salonRes = await db.query(
-    "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
   );
   const salon = salonRes.rows[0];

@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { signOutAction } from "@/app/actions/auth";
+import { logoutSuperadmin } from "@/app/actions/superadmin-auth";
 import {
   Shield,
   Building,
@@ -108,7 +108,7 @@ export function SuperAdminShell({ children }: { children: React.ReactNode }) {
 
         {/* Logout */}
         <div className="border-t p-4 bg-muted/20">
-          <form action={signOutAction}>
+          <form action={logoutSuperadmin}>
             <Button
               type="submit"
               variant="ghost"
@@ -152,7 +152,7 @@ export function SuperAdminShell({ children }: { children: React.ReactNode }) {
             </div>
 
             <div className="border-t p-4 bg-muted/20">
-              <form action={signOutAction}>
+              <form action={logoutSuperadmin}>
                 <Button
                   type="submit"
                   variant="ghost"

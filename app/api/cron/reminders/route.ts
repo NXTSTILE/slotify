@@ -46,7 +46,7 @@ export async function GET(request: Request) {
     // 4. Fetch salons in bulk (including Meta Graph API credentials)
     const salonRes = await db.query(
       `SELECT id, name, whatsapp_phone_number_id, whatsapp_access_token 
-       FROM public.salons WHERE id = ANY($1::uuid[])`,
+       FROM public.salons WHERE id = ANY($1::uuid[]) AND is_deleted = false`,
       [salonIds]
     );
     const salonMap = new Map(salonRes.rows.map((s) => [s.id, s]));

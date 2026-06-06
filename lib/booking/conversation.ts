@@ -278,7 +278,7 @@ async function cancelAppointmentById(
 async function loadSalon(salonId: string): Promise<SalonRow> {
   const res = await db.query(
     `SELECT id, name, phone, address, city, cancellation_policy, whatsapp_phone_number_id, whatsapp_access_token 
-     FROM public.salons WHERE id = $1 LIMIT 1`,
+     FROM public.salons WHERE id = $1 AND is_deleted = false LIMIT 1`,
     [salonId]
   );
   if (res.rows.length === 0) {
@@ -1272,7 +1272,7 @@ async function handleConfirmingName(
   // Verify the frozen appointment still exists and is still pending (not expired/taken)
   const checkRes = await db.query(
     `SELECT id, start_time, end_time, total_duration_minutes, total_price, staff_id 
-     FROM public.appointments WHERE id = $1 AND salon_id = $2 AND status = 'pending' LIMIT 1`,
+     FROM public.appointments WHERE id = $1 AND is_deleted = false AND salon_id = $2 AND status = 'pending' LIMIT 1`,
     [frozenId, salon.id]
   );
   if (checkRes.rows.length === 0) {

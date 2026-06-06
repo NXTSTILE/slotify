@@ -13,7 +13,7 @@ export default async function CustomersPage() {
 
   // 2. Load salon info
   const salonRes = await db.query(
-    "SELECT id FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
   );
   const salon = salonRes.rows[0];
@@ -33,7 +33,7 @@ export default async function CustomersPage() {
 
   // 4. Query all appointments for stats calculation
   const aptRes = await db.query(
-    "SELECT id, customer_id, start_time, status, total_price FROM public.appointments WHERE salon_id = $1",
+    "SELECT id, customer_id, start_time, status, total_price FROM public.appointments WHERE salon_id = $1 AND is_deleted = false",
     [salon.id]
   );
   const appts = aptRes.rows;

@@ -159,7 +159,7 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }, logId: string
 
       try {
         const result = await db.query(
-          "SELECT id, name FROM public.salons WHERE whatsapp_phone_number_id = $1 LIMIT 1",
+          "SELECT id, name FROM public.salons WHERE whatsapp_phone_number_id = $1 AND is_deleted = false LIMIT 1",
           [phoneNumberId]
         );
 
@@ -169,7 +169,7 @@ async function processPayload(payload: { entry?: WaGraphEntry[] }, logId: string
           console.warn("[webhook]", warnMsg);
           errors.push(warnMsg);
           
-          const allSalons = await db.query("SELECT id, name, whatsapp_phone_number_id FROM public.salons");
+          const allSalons = await db.query("SELECT id, name, whatsapp_phone_number_id FROM public.salons WHERE is_deleted = false");
           console.warn("[webhook] All salons in DB:", JSON.stringify(allSalons.rows));
           continue;
         }

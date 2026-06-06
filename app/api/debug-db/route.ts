@@ -53,7 +53,7 @@ export async function GET() {
 
     // 4. Test query on salons table
     try {
-      const salonsRes = await db.query("SELECT id, name, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL) as has_token FROM public.salons");
+      const salonsRes = await db.query("SELECT id, name, whatsapp_phone_number_id, whatsapp_business_account_id, (whatsapp_access_token IS NOT NULL) as has_token FROM public.salons WHERE is_deleted = false");
       diagnostics.salonsTable = {
         ok: true,
         count: salonsRes.rowCount,

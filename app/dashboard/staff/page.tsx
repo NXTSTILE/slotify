@@ -15,7 +15,7 @@ export default async function StaffPage() {
   if (!session) redirect("/login");
 
   const salonRes = await db.query(
-    "SELECT id, name FROM public.salons WHERE owner_id = $1 LIMIT 1",
+    "SELECT id, name FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
   );
   const salon = salonRes.rows[0];

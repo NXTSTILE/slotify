@@ -68,7 +68,7 @@ export async function GET() {
 
     try {
       const webhookLogsRes = await db.query(
-        "SELECT id, error, created_at FROM public.webhook_logs WHERE error IS NOT NULL ORDER BY created_at DESC LIMIT 5"
+        "SELECT id, error, received_at FROM public.webhook_logs WHERE error IS NOT NULL ORDER BY received_at DESC LIMIT 5"
       );
       diagnostics.webhookLogs = webhookLogsRes.rows;
     } catch (e: any) {

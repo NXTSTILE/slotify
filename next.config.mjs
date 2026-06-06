@@ -37,7 +37,7 @@ const nextConfig = {
   experimental: {
     serverComponentsExternalPackages: [],
     serverActions: {
-      allowedOrigins: ["nxstile.in", "www.nxstile.in"],
+      allowedOrigins: ["nxtstile.in", "www.nxtstile.in"],
     },
   },
 

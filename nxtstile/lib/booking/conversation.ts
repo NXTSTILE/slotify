@@ -57,6 +57,11 @@ function toJson(ctx: Ctx): Json {
   return ctx as Json;
 }
 
+function isGreeting(text: string): boolean {
+  const t = text.trim().toLowerCase().replace(/[!.,?]+$/, "");
+  return ["hi", "hii", "hiii", "hello", "hey", "helo", "hai", "start", "book"].includes(t);
+}
+
 async function ensureConversationRow(
   admin: SupabaseClient<Database>,
   salonId: string,
@@ -230,6 +235,12 @@ export async function handleConversationMessage(
   const { state, ctx } = await getState(admin, salonId, customerPhone);
 
   const kw = tokenizeKeywords(userText);
+
+  if (incoming.kind === "text" && isGreeting(userText)) {
+    await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
+    await startIdleFlow(admin, salon, customerPhone);
+    return;
+  }
 
   if (kw === "HELP") {
     await sendAuth(salon, (pid, tok) =>
@@ -424,13 +435,6 @@ export async function handleConversationMessage(
       );
     } else {
       await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
-      await sendAuth(salon, (pid, tok) =>
-        sendWhatsAppText(pid, tok, {
-          toE164: customerPhone,
-          body: `Hi! Welcome to ${salon.name}. Let's pick your services — sending the menu now.`,
-        })
-      );
-      await startIdleFlow(admin, salon, customerPhone);
     }
     return;
   }
@@ -442,7 +446,7 @@ export async function handleConversationMessage(
 
   switch (state) {
     case "IDLE":
-      await startIdleFlow(admin, salon, customerPhone);
+      // Ignored unknown input to allow human chat
       return;
     case "SELECTING_SERVICES":
       await handleSelectingServices(admin, salon, customerPhone, servicesInput, ctx);
@@ -458,7 +462,6 @@ export async function handleConversationMessage(
       return;
     default:
       await ensureConversationRow(admin, salonId, customerPhone, "IDLE", {});
-      await startIdleFlow(admin, salon, customerPhone);
   }
 }
 

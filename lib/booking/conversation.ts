@@ -507,8 +507,7 @@ export async function handleConversationMessage(
         })
       );
     } else {
-      await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
-      await sendGenderMenu(salon, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
     }
     return;
   }
@@ -535,8 +534,7 @@ export async function handleConversationMessage(
       return;
     default:
       await releaseFrozenSlot(salonId, customerPhone, ctx.frozenAppointmentId);
-      await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
-      await sendGenderMenu(salon, customerPhone);
+      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
   }
 }
 
@@ -680,9 +678,8 @@ async function handleIdleInput(
     return;
   }
 
-  // Unknown input in IDLE — re-prompt gender selection
-  await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
-  await sendGenderMenu(salon, customerPhone);
+  // Unknown input in IDLE — just ignore it so we don't interrupt human chat
+  return;
 }
 
 /**

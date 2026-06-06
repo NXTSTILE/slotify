@@ -62,7 +62,7 @@ export default async function DashboardHomePage() {
     const aptRes = await db.query(
       `SELECT id, start_time, end_time, status, total_price, customer_id 
        FROM public.appointments 
-       WHERE salon_id = $1 
+       WHERE salon_id = $1 AND is_deleted = false
        AND start_time >= $2 
        AND start_time <= $3 
        ORDER BY start_time ASC`,
@@ -91,7 +91,7 @@ export default async function DashboardHomePage() {
     const revRes = await db.query(
       `SELECT COALESCE(SUM(total_price), 0)::float as revenue 
        FROM public.appointments 
-       WHERE salon_id = $1 
+       WHERE salon_id = $1 AND is_deleted = false
        AND status = 'completed' 
        AND start_time >= $2 
        AND start_time <= $3`,

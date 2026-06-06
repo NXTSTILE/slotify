@@ -93,6 +93,7 @@ export async function assignStaff(
          FROM public.appointments
          WHERE salon_id = $1
            AND staff_id = $2
+           AND is_deleted = false
            AND status IN ('pending', 'confirmed')
            AND end_time > $3
            AND start_time < $4

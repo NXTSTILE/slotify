@@ -283,6 +283,7 @@ const serviceSchema = z.object({
   price: z.coerce.number().nonnegative(),
   category_id: z.string().uuid().nullable().optional(),
   is_active: z.coerce.boolean().optional(),
+  gender_tag: z.enum(["male", "female", "unisex"]).optional().default("unisex"),
 });
 
 export async function addServiceAction(formData: FormData) {
@@ -292,6 +293,7 @@ export async function addServiceAction(formData: FormData) {
     price: formData.get("price"),
     category_id: formData.get("category_id") || null,
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
+    gender_tag: formData.get("gender_tag") || "unisex",
   });
   if (!parsed.success) {
     return { error: "Duration must be a multiple of 5; check price." };
@@ -306,8 +308,8 @@ export async function addServiceAction(formData: FormData) {
     const count = Number(countRes.rows[0].count);
 
     await db.query(
-      `INSERT INTO public.services (salon_id, name, duration_minutes, price, category_id, is_active, display_order) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      `INSERT INTO public.services (salon_id, name, duration_minutes, price, category_id, is_active, display_order, gender_tag) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         salon.id,
         parsed.data.name,
@@ -315,7 +317,8 @@ export async function addServiceAction(formData: FormData) {
         parsed.data.price,
         parsed.data.category_id ?? null,
         parsed.data.is_active ?? true,
-        count + 1
+        count + 1,
+        parsed.data.gender_tag
       ]
     );
 
@@ -337,6 +340,7 @@ export async function updateServiceAction(formData: FormData) {
     price: formData.get("price"),
     category_id: formData.get("category_id") || null,
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
+    gender_tag: formData.get("gender_tag") || "unisex",
   });
   if (!parsed.success) {
     return { error: "Invalid service fields." };
@@ -345,14 +349,15 @@ export async function updateServiceAction(formData: FormData) {
     const { salon } = await requireSalon();
     await db.query(
       `UPDATE public.services 
-       SET name = $1, duration_minutes = $2, price = $3, category_id = $4, is_active = $5 
-       WHERE id = $6 AND salon_id = $7`,
+       SET name = $1, duration_minutes = $2, price = $3, category_id = $4, is_active = $5, gender_tag = $6 
+       WHERE id = $7 AND salon_id = $8`,
       [
         parsed.data.name,
         parsed.data.duration_minutes,
         parsed.data.price,
         parsed.data.category_id ?? null,
         parsed.data.is_active ?? true,
+        parsed.data.gender_tag,
         id,
         salon.id
       ]

@@ -25,7 +25,7 @@ export default async function AppointmentsPage() {
   const aptRes = await db.query(
     `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id, staff_id 
      FROM public.appointments 
-     WHERE salon_id = $1 
+     WHERE salon_id = $1 AND is_deleted = false
      ORDER BY start_time ASC`,
     [salon.id]
   );

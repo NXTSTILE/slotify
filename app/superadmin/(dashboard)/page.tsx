@@ -1,16 +1,10 @@
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { SuperAdminView } from "./superadmin-view";
 
 export const dynamic = "force-dynamic";
 
 export default async function SuperAdminPage() {
-  const session = await getSession();
-  if (!session) {
-    redirect("/login");
-  }
-
   try {
     // 1. Fetch platform statistics in parallel
     const [statsRes, salonsRes, usersRes, apptsRes] = await Promise.all([
@@ -76,7 +70,7 @@ export default async function SuperAdminPage() {
 
     return (
       <SuperAdminView
-        currentUserId={session.userId}
+        currentUserId={"superadmin"}
         stats={stats}
         salons={salons}
         users={users}

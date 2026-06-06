@@ -162,7 +162,7 @@ async function findActiveAppointment(
     const aptRes = await db.query(
       `SELECT id, start_time, status, total_price, total_duration_minutes 
        FROM public.appointments 
-       WHERE salon_id = $1 AND customer_id = $2 AND status IN ('pending', 'confirmed') 
+       WHERE salon_id = $1 AND customer_id = $2 AND is_deleted = false AND status IN ('pending', 'confirmed') 
        ORDER BY start_time DESC LIMIT 1`,
       [salonId, customerId]
     );
@@ -1137,7 +1137,7 @@ async function handleSelectingServices(
     // No staff — use salon-level queue: find latest end_time in this session window
     const busyRes = await db.query(
       `SELECT end_time FROM public.appointments 
-       WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+       WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') 
        AND start_time >= $2 AND start_time < $3 
        ORDER BY end_time DESC LIMIT 1`,
       [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]

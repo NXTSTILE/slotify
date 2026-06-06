@@ -36,6 +36,7 @@ type Svc = {
   price: number;
   category_id: string | null;
   is_active: boolean;
+  gender_tag: string;
 };
 
 export function ServicesReorder({
@@ -160,6 +161,18 @@ function SortableRow({
                     {c.name}
                   </option>
                 ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Gender</Label>
+              <select
+                name="gender_tag"
+                defaultValue={service.gender_tag}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              >
+                <option value="unisex">Unisex</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
               </select>
             </div>
             <div className="flex items-center gap-2 sm:col-span-2">

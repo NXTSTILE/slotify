@@ -15,17 +15,38 @@ export async function GET(request: Request) {
   }
 
   const now = new Date();
-  const windowStart = addHours(now, 23.5);
-  const windowEnd = addHours(now, 24.5);
+  
+  // CONDITION 1: Long-term booking
+  // We want to send a reminder ~23.5 hours AFTER the customer started the chat (i.e. booked the appointment)
+  // This ensures the reminder is sent just before the WhatsApp 24-hour free messaging window closes.
+  const longTermCreatedStart = addHours(now, -24.5);
+  const longTermCreatedEnd = addHours(now, -23.5);
+
+  // CONDITION 2: Short-term booking
+  // If the appointment is booked within 24 hours of the current time, we send a reminder exactly 1 hour before it starts.
+  // We ensure it was booked within the last 24 hours to stay compliant.
+  const shortTermCreatedMin = addHours(now, -24);
+  const shortTermStartMin = addHours(now, 0.5);
+  const shortTermStartMax = addHours(now, 1.5);
 
   try {
-    // 2. Fetch pending confirmed appointments inside the 24-hour reminder window
+    // Fetch pending confirmed appointments meeting either condition
     const aptRes = await db.query(
       `SELECT id, salon_id, start_time, customer_id, reminder_sent 
        FROM public.appointments 
-       WHERE status = 'confirmed' AND reminder_sent = false 
-       AND start_time >= $1 AND start_time <= $2`,
-      [windowStart.toISOString(), windowEnd.toISOString()]
+       WHERE status = 'confirmed' AND is_deleted = false AND reminder_sent = false 
+       AND (
+         (created_at >= $1 AND created_at <= $2)
+         OR 
+         (created_at >= $3 AND start_time >= $4 AND start_time <= $5)
+       )`,
+      [
+        longTermCreatedStart.toISOString(), 
+        longTermCreatedEnd.toISOString(),
+        shortTermCreatedMin.toISOString(),
+        shortTermStartMin.toISOString(),
+        shortTermStartMax.toISOString()
+      ]
     );
     const appointments = aptRes.rows;
 

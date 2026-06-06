@@ -90,7 +90,7 @@ export async function getAvailableWindows(
   // 4. Fetch Busy Times — exclude expired pending appointments
   const busyRes = await db.query(
     `SELECT start_time, end_time FROM public.appointments 
-     WHERE salon_id = $1 AND status IN ('pending', 'confirmed') 
+     WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') 
      AND start_time >= $2 AND start_time < $3`,
     [salonId, dayStartUtc.toISOString(), dayEndUtc.toISOString()]
   );

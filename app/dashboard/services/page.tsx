@@ -113,6 +113,19 @@ export default async function ServicesPage() {
                 <option value="false">Inactive</option>
               </select>
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="gender_tag">Gender</Label>
+              <select
+                id="gender_tag"
+                name="gender_tag"
+                defaultValue="unisex"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+              >
+                <option value="unisex">Unisex</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            </div>
             <div className="flex items-end">
               <Button type="submit">Save service</Button>
             </div>
@@ -131,6 +144,7 @@ export default async function ServicesPage() {
           price: Number(s.price),
           category_id: s.category_id,
           is_active: s.is_active,
+          gender_tag: s.gender_tag,
         }))}
       />
 

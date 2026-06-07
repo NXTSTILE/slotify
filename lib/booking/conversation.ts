@@ -328,7 +328,16 @@ async function handleSelectingDateSession(salon: SalonRow, customerPhone: string
     selectedSession: sessionChoice,
   });
 
-  const res = await db.query("SELECT id, name FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC", [salon.id]);
+  const res = await db.query(
+    `SELECT DISTINCT s.id, s.name, s.display_order 
+     FROM public.services s
+     JOIN public.subservices sub ON sub.service_id = s.id
+     WHERE s.salon_id = $1 
+       AND sub.is_active = true 
+       AND (sub.gender_tag = $2 OR sub.gender_tag = 'unisex')
+     ORDER BY s.display_order ASC`,
+    [salon.id, ctx.gender || "unisex"]
+  );
   const groups = res.rows;
   if (!groups.length) {
     await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "No services available right now." }));
@@ -343,7 +352,16 @@ async function handleSelectingDateSession(salon: SalonRow, customerPhone: string
 }
 
 async function handleSelectingServiceGroups(salon: SalonRow, customerPhone: string, userText: string, ctx: Ctx) {
-  const res = await db.query("SELECT id, name FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC", [salon.id]);
+  const res = await db.query(
+    `SELECT DISTINCT s.id, s.name, s.display_order 
+     FROM public.services s
+     JOIN public.subservices sub ON sub.service_id = s.id
+     WHERE s.salon_id = $1 
+       AND sub.is_active = true 
+       AND (sub.gender_tag = $2 OR sub.gender_tag = 'unisex')
+     ORDER BY s.display_order ASC`,
+    [salon.id, ctx.gender || "unisex"]
+  );
   const groups = res.rows;
   
   const parts = userText.split(/[\s,\/]+/).map(x => x.trim()).filter(Boolean);

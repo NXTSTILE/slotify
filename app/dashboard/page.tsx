@@ -113,12 +113,24 @@ export default async function DashboardHomePage() {
     );
     const unread = unreadRes.rows[0].count || 0;
 
-    // 7. Load active services list for Walk-In booking dialog
-    const svcRes = await db.query(
-      "SELECT id, name, price FROM public.subservices WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+    // 7. Load active service categories and their active subservices for Walk-In booking dialog
+    const categoriesRes = await db.query(
+      "SELECT id, name FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC",
       [salon.id]
     );
-    const services = svcRes.rows;
+    const subservicesRes = await db.query(
+      "SELECT id, service_id, name, price FROM public.subservices WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+      [salon.id]
+    );
+
+    const categories = categoriesRes.rows;
+    const subservices = subservicesRes.rows;
+
+    const services = categories.map((cat) => ({
+      id: cat.id,
+      name: cat.name,
+      subservices: subservices.filter((sub) => sub.service_id === cat.id),
+    })).filter(cat => cat.subservices.length > 0);
 
     return (
       <div className="space-y-8">

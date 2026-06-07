@@ -20,6 +20,57 @@ export type WindowResult =
   | { ok: true; windows: WindowStatus[] }
   | { ok: false; reason: string };
 
+/**
+ * Checks if a specific queue (or the salon overall) has a contiguous time slot of length
+ * totalDurationMinutes + buffer within a session window.
+ */
+async function hasAvailableSlot(
+  salonId: string,
+  queueId: string | null,
+  sessionStart: Date,
+  sessionEnd: Date,
+  totalDurationMinutes: number
+): Promise<boolean> {
+  const requiredDurMs = (totalDurationMinutes + APPOINTMENT_BUFFER_MINUTES) * 60000;
+
+  let queryText = `
+    SELECT start_time, end_time FROM public.appointments 
+    WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed')
+      AND end_time > $2 AND start_time < $3
+  `;
+  const params: any[] = [salonId, sessionStart.toISOString(), sessionEnd.toISOString()];
+
+  if (queueId) {
+    queryText += ` AND queue_id = $4`;
+    params.push(queueId);
+  }
+
+  queryText += ` ORDER BY start_time ASC`;
+
+  const res = await db.query<{ start_time: string; end_time: string }>(queryText, params);
+
+  let availableAt = new Date(sessionStart);
+
+  for (const row of res.rows) {
+    const aptStart = new Date(row.start_time);
+    const aptEnd = new Date(row.end_time);
+
+    // Does the gap between availableAt and this appointment's start fit our booking?
+    if (aptStart.getTime() - availableAt.getTime() >= requiredDurMs) {
+      return true; // Found a slot!
+    }
+
+    // Update availableAt to be after this appointment
+    const possibleNextStart = addMinutes(aptEnd, APPOINTMENT_BUFFER_MINUTES);
+    if (possibleNextStart > availableAt) {
+      availableAt = possibleNextStart;
+    }
+  }
+
+  // Check after the last appointment
+  return (availableAt.getTime() + requiredDurMs) <= sessionEnd.getTime();
+}
+
 /** 
  * Calculates availability for Morning and Evening sessions.
  *
@@ -87,47 +138,43 @@ export async function getAvailableWindows(
     }
   ];
 
-  // 4. Fetch Busy Times — exclude expired pending appointments
-  const busyRes = await db.query(
-    `SELECT start_time, end_time FROM public.appointments 
-     WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') 
-     AND start_time >= $2 AND start_time < $3`,
-    [salonId, dayStartUtc.toISOString(), dayEndUtc.toISOString()]
+  // 4. Load Active Queues
+  const queueRes = await db.query<{ id: string }>(
+    "SELECT id FROM public.queues WHERE salon_id = $1 AND is_active = true",
+    [salonId]
   );
-  const busyRows = busyRes.rows;
+  const activeQueues = queueRes.rows;
 
-  const busy = busyRows.map(r => ({
-    start: new Date(r.start_time),
-    end: new Date(r.end_time)
-  }));
+  // 5. Calculate availability for each session using precise gap check
+  const validSessions = sessions.filter(session => isBefore(session.start, session.end));
 
-  // 5. Calculate availability for each session
-  const windowResults: WindowStatus[] = sessions
-    .filter(session => isBefore(session.start, session.end)) // skip fully-elapsed sessions
-    .map(session => {
-      // Remaining minutes from effective start (now or session open) to session end
-      const totalWindowMinutes = (session.end.getTime() - session.start.getTime()) / 60000;
-      
-      // Minutes already booked in this window
-      const bookedMinutes = busy.reduce((acc, b) => {
-        const overlapStart = Math.max(session.start.getTime(), b.start.getTime());
-        const overlapEnd = Math.min(session.end.getTime(), b.end.getTime());
-        const overlapMs = Math.max(0, overlapEnd - overlapStart);
-        return acc + (overlapMs / 60000);
-      }, 0);
+  const windowResults = await Promise.all(
+    validSessions.map(async (session) => {
+      let isAvailable = false;
 
-      const freeMinutes = totalWindowMinutes - bookedMinutes;
-      const isAvailable = freeMinutes >= (totalDurationMinutes + APPOINTMENT_BUFFER_MINUTES);
+      if (activeQueues.length > 0) {
+        // Check if ANY active queue has an available slot
+        for (const queue of activeQueues) {
+          if (await hasAvailableSlot(salonId, queue.id, session.start, session.end, totalDurationMinutes)) {
+            isAvailable = true;
+            break;
+          }
+        }
+      } else {
+        // No queues configured — check salon-wide single timeline
+        isAvailable = await hasAvailableSlot(salonId, null, session.start, session.end, totalDurationMinutes);
+      }
 
       return {
         name: session.name,
         label: `${session.name} Session`,
-        status: isAvailable ? "AVAILABLE" : "FULLY_BOOKED",
+        status: isAvailable ? ("AVAILABLE" as const) : ("FULLY_BOOKED" as const),
         range: `${format(toZonedTime(session.rawStart, SALON_TIMEZONE), "hh:mm a")} - ${format(toZonedTime(session.end, SALON_TIMEZONE), "hh:mm a")}`,
         startUtc: session.start,
         endUtc: session.end
       };
-    });
+    })
+  );
 
   return { ok: true, windows: windowResults };
 }

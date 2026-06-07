@@ -127,8 +127,8 @@ export async function cancelAppointmentAction(formData: FormData) {
     const dateRow = lastMsgRes.rows[0];
     const lastMsgTime = dateRow.last_customer_message_at ? new Date(dateRow.last_customer_message_at) : new Date(dateRow.created_at);
     const diffHours = (Date.now() - lastMsgTime.getTime()) / (1000 * 60 * 60);
-    if (diffHours > 12) {
-      return { error: "Rescheduling and cancellation can only be done within 12 hours after the customer's last message." };
+    if (diffHours > 24) {
+      return { error: "Rescheduling and cancellation can only be done within 24 hours after the customer's last message." };
     }
 
     const client = await db.pool.connect();
@@ -179,8 +179,8 @@ export async function rescheduleAppointmentAction(formData: FormData) {
     const dateRow = lastMsgRes.rows[0];
     const lastMsgTime = dateRow.last_customer_message_at ? new Date(dateRow.last_customer_message_at) : new Date(dateRow.created_at);
     const diffHours = (Date.now() - lastMsgTime.getTime()) / (1000 * 60 * 60);
-    if (diffHours > 12) {
-      return { error: "Rescheduling and cancellation can only be done within 12 hours after the customer's last message." };
+    if (diffHours > 24) {
+      return { error: "Rescheduling and cancellation can only be done within 24 hours after the customer's last message." };
     }
 
     const client = await db.pool.connect();

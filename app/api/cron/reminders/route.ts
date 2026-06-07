@@ -51,13 +51,13 @@ export async function GET(request: Request) {
       const phone = notif.customer_phone;
 
       if (pid && tok && phone) {
-        // Enforce 12-hour customer care window check
+        // Enforce 24-hour customer care window check
         const lastMsg = notif.last_customer_message_at 
           ? new Date(notif.last_customer_message_at) 
           : new Date(notif.appointment_created_at);
         const diffHours = (Date.now() - lastMsg.getTime()) / (1000 * 60 * 60);
 
-        if (diffHours <= 12) {
+        if (diffHours <= 24) {
           const { sendWhatsAppText } = await import("@/lib/whatsapp/send");
           let bodyText = "";
           if (notif.notification_type === "cancellation") {
@@ -81,7 +81,7 @@ export async function GET(request: Request) {
             }
           }
         } else {
-          console.warn(`[cron/reminders] Skipping notification ${notif.notification_id} - customer last messaged ${diffHours.toFixed(1)} hours ago (exceeds 12h window)`);
+          console.warn(`[cron/reminders] Skipping notification ${notif.notification_id} - customer last messaged ${diffHours.toFixed(1)} hours ago (exceeds 24h window)`);
         }
       }
 

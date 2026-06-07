@@ -39,7 +39,7 @@ jobs:
       registry: curlimages
       repository: curl
       tag: latest
-    run_command: curl -s -X GET -H "Authorization: Bearer $${CRON_SECRET}" https://$${APP_URL}/api/cron/reminders
+    run_command: curl -s -X GET -H "Authorization: Bearer $${CRON_SECRET}" $${APP_URL}/api/cron/reminders
     envs:
       - key: CRON_SECRET
         scope: RUN_TIME

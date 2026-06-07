@@ -260,13 +260,13 @@ export async function addCategoryAction(formData: FormData) {
     
     // Calculate display order sequence
     const countRes = await db.query(
-      "SELECT COUNT(*) as count FROM public.service_categories WHERE salon_id = $1",
+      "SELECT COUNT(*) as count FROM public.services WHERE salon_id = $1",
       [salon.id]
     );
     const count = Number(countRes.rows[0].count);
 
     await db.query(
-      "INSERT INTO public.service_categories (salon_id, name, display_order) VALUES ($1, $2, $3)",
+      "INSERT INTO public.services (salon_id, name, display_order) VALUES ($1, $2, $3)",
       [salon.id, parsed.data.name, count + 1]
     );
 
@@ -281,9 +281,10 @@ const serviceSchema = z.object({
   name: z.string().min(1),
   duration_minutes: z.coerce.number().refine((n) => n > 0 && n % 5 === 0),
   price: z.coerce.number().nonnegative(),
-  category_id: z.string().uuid().nullable().optional(),
+  service_id: z.string().uuid().nullable().optional(),
   is_active: z.coerce.boolean().optional(),
   gender_tag: z.enum(["male", "female", "unisex"]).optional().default("unisex"),
+  tier: z.enum(["basic", "medium", "premium"]).optional().nullable(),
 });
 
 export async function addServiceAction(formData: FormData) {
@@ -291,34 +292,36 @@ export async function addServiceAction(formData: FormData) {
     name: formData.get("name"),
     duration_minutes: formData.get("duration_minutes"),
     price: formData.get("price"),
-    category_id: formData.get("category_id") || null,
+    service_id: formData.get("service_id") || null,
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
     gender_tag: formData.get("gender_tag") || "unisex",
+    tier: formData.get("tier") || null,
   });
   if (!parsed.success) {
-    return { error: "Duration must be a multiple of 5; check price." };
+    return { error: "Invalid duration or missing fields." };
   }
   try {
     const { salon } = await requireSalon();
     
     const countRes = await db.query(
-      "SELECT COUNT(*) as count FROM public.services WHERE salon_id = $1",
+      "SELECT COUNT(*) as count FROM public.subservices WHERE salon_id = $1",
       [salon.id]
     );
     const count = Number(countRes.rows[0].count);
 
     await db.query(
-      `INSERT INTO public.services (salon_id, name, duration_minutes, price, category_id, is_active, display_order, gender_tag) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO public.subservices (salon_id, name, duration_minutes, price, service_id, is_active, display_order, gender_tag, tier) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         salon.id,
         parsed.data.name,
         parsed.data.duration_minutes,
         parsed.data.price,
-        parsed.data.category_id ?? null,
+        parsed.data.service_id ?? null,
         parsed.data.is_active ?? true,
         count + 1,
-        parsed.data.gender_tag
+        parsed.data.gender_tag,
+        parsed.data.tier ?? null
       ]
     );
 
@@ -338,9 +341,10 @@ export async function updateServiceAction(formData: FormData) {
     name: formData.get("name"),
     duration_minutes: formData.get("duration_minutes"),
     price: formData.get("price"),
-    category_id: formData.get("category_id") || null,
+    service_id: formData.get("service_id") || null,
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
     gender_tag: formData.get("gender_tag") || "unisex",
+    tier: formData.get("tier") || null,
   });
   if (!parsed.success) {
     return { error: "Invalid service fields." };
@@ -348,16 +352,17 @@ export async function updateServiceAction(formData: FormData) {
   try {
     const { salon } = await requireSalon();
     await db.query(
-      `UPDATE public.services 
-       SET name = $1, duration_minutes = $2, price = $3, category_id = $4, is_active = $5, gender_tag = $6 
-       WHERE id = $7 AND salon_id = $8`,
+      `UPDATE public.subservices 
+       SET name = $1, duration_minutes = $2, price = $3, service_id = $4, is_active = $5, gender_tag = $6, tier = $7 
+       WHERE id = $8 AND salon_id = $9`,
       [
         parsed.data.name,
         parsed.data.duration_minutes,
         parsed.data.price,
-        parsed.data.category_id ?? null,
+        parsed.data.service_id ?? null,
         parsed.data.is_active ?? true,
         parsed.data.gender_tag,
+        parsed.data.tier ?? null,
         id,
         salon.id
       ]
@@ -378,7 +383,7 @@ export async function deleteServiceAction(formData: FormData) {
   try {
     const { salon } = await requireSalon();
     await db.query(
-      "DELETE FROM public.services WHERE id = $1 AND salon_id = $2",
+      "DELETE FROM public.subservices WHERE id = $1 AND salon_id = $2",
       [id, salon.id]
     );
 
@@ -403,7 +408,7 @@ export async function reorderServicesAction(order: string[]) {
       await client.query("BEGIN");
       for (let i = 0; i < ids.data.length; i++) {
         await client.query(
-          "UPDATE public.services SET display_order = $1 WHERE id = $2 AND salon_id = $3",
+          "UPDATE public.subservices SET display_order = $1 WHERE id = $2 AND salon_id = $3",
           [i + 1, ids.data[i], salon.id]
         );
       }
@@ -435,7 +440,7 @@ export async function reorderCategoriesAction(order: string[]) {
       await client.query("BEGIN");
       for (let i = 0; i < ids.data.length; i++) {
         await client.query(
-          "UPDATE public.service_categories SET display_order = $1 WHERE id = $2 AND salon_id = $3",
+          "UPDATE public.services SET display_order = $1 WHERE id = $2 AND salon_id = $3",
           [i + 1, ids.data[i], salon.id]
         );
       }
@@ -462,7 +467,7 @@ export async function deleteCategoryAction(formData: FormData) {
   try {
     const { salon } = await requireSalon();
     await db.query(
-      "DELETE FROM public.service_categories WHERE id = $1 AND salon_id = $2",
+      "DELETE FROM public.services WHERE id = $1 AND salon_id = $2",
       [id, salon.id]
     );
 
@@ -569,7 +574,7 @@ export async function addWalkInBookingAction(formData: FormData) {
 
     // 2. Fetch selected services details
     const svcRes = await client.query(
-      "SELECT id, price, duration_minutes FROM public.services WHERE id = ANY($1::uuid[])",
+      "SELECT id, price, duration_minutes FROM public.subservices WHERE id = ANY($1::uuid[])",
       [serviceIds]
     );
     const dbServices = svcRes.rows;

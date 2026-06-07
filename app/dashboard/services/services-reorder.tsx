@@ -1,25 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import {
-  DndContext,
-  KeyboardSensor,
-  PointerSensor,
-  closestCenter,
-  type DragEndEvent,
-  useSensor,
-  useSensors,
-} from "@dnd-kit/core";
-import {
-  SortableContext,
-  arrayMove,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
-import { useEffect, useState } from "react";
-import {
-  reorderServicesAction,
+  submitDeleteCategory,
   submitDeleteService,
   submitUpdateService,
 } from "@/app/actions/salon";
@@ -27,181 +10,233 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { GripVertical } from "lucide-react";
+import { ChevronDown, ChevronRight, Edit2 } from "lucide-react";
 
-type Svc = {
+type Subservice = {
   id: string;
   name: string;
   duration_minutes: number;
   price: number;
-  category_id: string | null;
+  service_id: string | null;
   is_active: boolean;
   gender_tag: string;
+  tier: string | null;
+};
+
+type ServiceGroup = {
+  id: string;
+  name: string;
 };
 
 export function ServicesReorder({
-  categories,
   services,
+  subservices,
 }: {
-  categories: { id: string; name: string }[];
-  services: Svc[];
+  services: ServiceGroup[];
+  subservices: Subservice[];
 }) {
-  const [items, setItems] = useState(services);
-  useEffect(() => {
-    setItems(services);
-  }, [services]);
-
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
-
-  async function onDragEnd(event: DragEndEvent) {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-    const oldIndex = items.findIndex((s) => s.id === active.id);
-    const newIndex = items.findIndex((s) => s.id === over.id);
-    if (oldIndex < 0 || newIndex < 0) return;
-    const next = arrayMove(items, oldIndex, newIndex);
-    setItems(next);
-    const res = await reorderServicesAction(next.map((s) => s.id));
-    if (res?.error) {
-      console.error(res.error);
-      setItems(services);
-    }
-  }
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   return (
-    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
-      <SortableContext items={items.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+    <div className="space-y-4">
+      {services.map((service) => {
+        const isExpanded = expandedId === service.id;
+        const groupSubservices = subservices.filter((s) => s.service_id === service.id);
+
+        return (
+          <Card key={service.id} className="overflow-hidden">
+            <div
+              className="flex cursor-pointer items-center justify-between bg-muted/50 p-4 transition-colors hover:bg-muted"
+              onClick={() => setExpandedId(isExpanded ? null : service.id)}
+            >
+              <div className="flex items-center gap-2 font-medium">
+                {isExpanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
+                {service.name} ({groupSubservices.length})
+              </div>
+              <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <form action={submitDeleteCategory}>
+                  <input type="hidden" name="id" value={service.id} />
+                  <Button type="submit" variant="ghost" size="sm" className="h-8 text-destructive">
+                    Delete Group
+                  </Button>
+                </form>
+              </div>
+            </div>
+
+            {isExpanded && (
+              <CardContent className="border-t p-4 pt-4">
+                {groupSubservices.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No subservices added yet.</p>
+                ) : (
+                  <div className="space-y-4">
+                    {groupSubservices.map((sub) => (
+                      <SubserviceRow key={sub.id} subservice={sub} services={services} />
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            )}
+          </Card>
+        );
+      })}
+
+      {services.length === 0 && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Your services (drag to reorder)</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {items.map((s) => (
-              <SortableRow key={s.id} id={s.id} categories={categories} service={s} />
-            ))}
+          <CardContent className="p-6 text-center text-sm text-muted-foreground">
+            No service groups created yet.
           </CardContent>
         </Card>
-      </SortableContext>
-    </DndContext>
+      )}
+    </div>
   );
 }
 
-function SortableRow({
-  id,
-  categories,
-  service,
+function SubserviceRow({
+  subservice,
+  services,
 }: {
-  id: string;
-  categories: { id: string; name: string }[];
-  service: Svc;
+  subservice: Subservice;
+  services: ServiceGroup[];
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-    id,
-  });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.85 : 1,
-  };
+  const [isEditing, setIsEditing] = useState(false);
+
+  if (!isEditing) {
+    return (
+      <div className="flex items-center justify-between rounded-lg border p-4">
+        <div>
+          <div className="font-medium">
+            {subservice.name}
+            {subservice.tier && (
+              <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary capitalize">
+                {subservice.tier}
+              </span>
+            )}
+          </div>
+          <div className="text-sm text-muted-foreground">
+            {subservice.duration_minutes} min • ₹{subservice.price.toFixed(2)} • {subservice.gender_tag} •{" "}
+            {subservice.is_active ? "Active" : "Inactive"}
+          </div>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setIsEditing(true)}>
+          <Edit2 className="mr-2 h-4 w-4" /> Edit
+        </Button>
+      </div>
+    );
+  }
 
   return (
-    <div ref={setNodeRef} style={style} className="rounded-lg border p-4">
-      <div className="mb-3 flex items-start gap-2">
-        <button
-          type="button"
-          className="mt-1 cursor-grab text-muted-foreground active:cursor-grabbing"
-          {...attributes}
-          {...listeners}
-          aria-label="Drag to reorder"
-        >
-          <GripVertical className="h-4 w-4" />
-        </button>
-        <div className="flex-1 space-y-3">
-          <form action={submitUpdateService} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <input type="hidden" name="id" value={service.id} />
-            <div className="space-y-1">
-              <Label className="text-xs">Name</Label>
-              <Input name="name" defaultValue={service.name} required />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Duration</Label>
-              <Input
-                name="duration_minutes"
-                type="number"
-                step={5}
-                min={5}
-                defaultValue={service.duration_minutes}
-                required
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Price</Label>
-              <Input
-                name="price"
-                type="number"
-                step="0.01"
-                min={0}
-                defaultValue={service.price}
-                required
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Category</Label>
-              <select
-                name="category_id"
-                defaultValue={service.category_id ?? ""}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-              >
-                <option value="">None</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Gender</Label>
-              <select
-                name="gender_tag"
-                defaultValue={service.gender_tag}
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
-              >
-                <option value="unisex">Unisex</option>
-                <option value="male">Male</option>
-                <option value="female">Female</option>
-              </select>
-            </div>
-            <div className="flex items-center gap-2 sm:col-span-2">
-              <input
-                type="checkbox"
-                name="is_active"
-                value="true"
-                defaultChecked={service.is_active}
-                id={`act-${service.id}`}
-                className="h-4 w-4 rounded border"
-              />
-              <Label htmlFor={`act-${service.id}`} className="text-sm font-normal">
-                Active
-              </Label>
-            </div>
-            <div className="flex flex-wrap gap-2 sm:col-span-2">
-              <Button type="submit" size="sm">
-                Save
-              </Button>
-            </div>
-          </form>
-          <form action={submitDeleteService} className="inline">
-            <input type="hidden" name="id" value={service.id} />
-            <Button type="submit" variant="ghost" size="sm" className="text-destructive">
-              Delete
-            </Button>
-          </form>
+    <div className="rounded-lg border bg-muted/20 p-4">
+      <form
+        action={(data) => {
+          submitUpdateService(data);
+          setIsEditing(false);
+        }}
+        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
+      >
+        <input type="hidden" name="id" value={subservice.id} />
+        <div className="space-y-1">
+          <Label className="text-xs">Name</Label>
+          <Input name="name" defaultValue={subservice.name} required />
         </div>
-      </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Duration (min)</Label>
+          <Input
+            name="duration_minutes"
+            type="number"
+            step={5}
+            min={5}
+            defaultValue={subservice.duration_minutes}
+            required
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Price (₹)</Label>
+          <Input
+            name="price"
+            type="number"
+            step="0.01"
+            min={0}
+            defaultValue={subservice.price}
+            required
+          />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Service Group</Label>
+          <select
+            name="service_id"
+            defaultValue={subservice.service_id ?? ""}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+          >
+            <option value="">None</option>
+            {services.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Gender</Label>
+          <select
+            name="gender_tag"
+            defaultValue={subservice.gender_tag}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+          >
+            <option value="unisex">Unisex</option>
+            <option value="male">Male</option>
+            <option value="female">Female</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Tier</Label>
+          <select
+            name="tier"
+            defaultValue={subservice.tier ?? ""}
+            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+          >
+            <option value="">None</option>
+            <option value="basic">Basic</option>
+            <option value="medium">Medium</option>
+            <option value="premium">Premium</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2 sm:col-span-2">
+          <input
+            type="checkbox"
+            name="is_active"
+            value="true"
+            defaultChecked={subservice.is_active}
+            id={`act-${subservice.id}`}
+            className="h-4 w-4 rounded border"
+          />
+          <Label htmlFor={`act-${subservice.id}`} className="text-sm font-normal">
+            Active
+          </Label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 sm:col-span-4 lg:col-span-2">
+          <Button type="submit" size="sm">
+            Save Changes
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => setIsEditing(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="ml-auto text-destructive"
+            onClick={(e) => {
+              const form = e.currentTarget.closest("div")?.nextElementSibling as HTMLFormElement;
+              if (form) form.requestSubmit();
+            }}
+          >
+            Delete
+          </Button>
+        </div>
+      </form>
+      <form action={submitDeleteService} className="hidden">
+        <input type="hidden" name="id" value={subservice.id} />
+      </form>
     </div>
   );
 }

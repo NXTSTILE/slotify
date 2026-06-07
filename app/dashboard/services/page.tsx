@@ -14,13 +14,11 @@ import { Separator } from "@/components/ui/separator";
 import { ServicesReorder } from "./services-reorder";
 
 export default async function ServicesPage() {
-  // 1. Fetch user session
   const session = await getSession();
   if (!session) {
     redirect("/login");
   }
 
-  // 2. Load salon info
   const salonRes = await db.query(
     "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
@@ -30,39 +28,39 @@ export default async function ServicesPage() {
     redirect("/setup");
   }
 
-  // 3. Query all categories in order
-  const catRes = await db.query(
-    "SELECT * FROM public.service_categories WHERE salon_id = $1 ORDER BY display_order ASC",
-    [salon.id]
-  );
-  const categories = catRes.rows;
-
-  // 4. Query all services in order
-  const svcRes = await db.query(
+  // Categories are now called "Services"
+  const serviceRes = await db.query(
     "SELECT * FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC",
     [salon.id]
   );
-  const services = svcRes.rows;
+  const services = serviceRes.rows;
+
+  // Services are now called "Subservices"
+  const subserviceRes = await db.query(
+    "SELECT * FROM public.subservices WHERE salon_id = $1 ORDER BY display_order ASC",
+    [salon.id]
+  );
+  const subservices = subserviceRes.rows;
 
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Services</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Manage Services</h1>
         <p className="text-sm text-muted-foreground">
-          Drag rows to reorder. Durations must be multiples of 5 minutes.
+          Create service groups (e.g., Hair, Nails) and add specific subservices under them.
         </p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>New category</CardTitle>
-          <CardDescription>Group services for the WhatsApp catalog (when display mode is grouped).</CardDescription>
+          <CardTitle>New Service Group</CardTitle>
+          <CardDescription>Top-level category for your WhatsApp catalog.</CardDescription>
         </CardHeader>
         <CardContent>
           <form action={submitAddCategory} className="flex flex-wrap gap-2">
-            <Input name="name" placeholder="Category name" required className="max-w-xs" />
+            <Input name="name" placeholder="Service group name (e.g., Hair)" required className="max-w-xs" />
             <Button type="submit" size="sm">
-              Add category
+              Add Service
             </Button>
           </form>
         </CardContent>
@@ -70,13 +68,13 @@ export default async function ServicesPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Add service</CardTitle>
+          <CardTitle>Add Subservice</CardTitle>
         </CardHeader>
         <CardContent>
           <form action={submitAddService} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="space-y-2 sm:col-span-2">
               <Label htmlFor="name">Name</Label>
-              <Input id="name" name="name" required />
+              <Input id="name" name="name" placeholder="e.g., Haircut" required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="duration_minutes">Duration (min)</Label>
@@ -87,18 +85,32 @@ export default async function ServicesPage() {
               <Input id="price" name="price" type="number" step="0.01" min={0} required />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="category_id">Category</Label>
+              <Label htmlFor="service_id">Service Group</Label>
               <select
-                id="category_id"
-                name="category_id"
+                id="service_id"
+                name="service_id"
+                required
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
               >
-                <option value="">None</option>
-                {categories.map((c) => (
+                <option value="">Select...</option>
+                {services.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
                   </option>
                 ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="tier">Tier (Optional)</Label>
+              <select
+                id="tier"
+                name="tier"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+              >
+                <option value="">None</option>
+                <option value="basic">Basic</option>
+                <option value="medium">Medium</option>
+                <option value="premium">Premium</option>
               </select>
             </div>
             <div className="space-y-2">
@@ -126,8 +138,8 @@ export default async function ServicesPage() {
                 <option value="female">Female</option>
               </select>
             </div>
-            <div className="flex items-end">
-              <Button type="submit">Save service</Button>
+            <div className="flex items-end lg:col-span-2">
+              <Button type="submit">Save subservice</Button>
             </div>
           </form>
         </CardContent>
@@ -136,35 +148,18 @@ export default async function ServicesPage() {
       <Separator />
 
       <ServicesReorder
-        categories={categories.map((c) => ({ id: c.id, name: c.name }))}
-        services={services.map((s) => ({
+        services={services.map((c) => ({ id: c.id, name: c.name }))}
+        subservices={subservices.map((s) => ({
           id: s.id,
           name: s.name,
           duration_minutes: s.duration_minutes,
           price: Number(s.price),
-          category_id: s.category_id,
+          service_id: s.service_id,
           is_active: s.is_active,
           gender_tag: s.gender_tag,
+          tier: s.tier || null,
         }))}
       />
-
-      {categories.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Categories</CardTitle>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {categories.map((c) => (
-              <form key={c.id} action={submitDeleteCategory} className="inline">
-                <input type="hidden" name="id" value={c.id} />
-                <Button type="submit" variant="outline" size="sm">
-                  Delete {c.name}
-                </Button>
-              </form>
-            ))}
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

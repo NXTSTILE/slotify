@@ -1,75 +1,45 @@
-# DigitalOcean App Platform Specification
-# This file is used by DigitalOcean to provision and deploy your application.
-# Commit this file to your git repository to enable automated Git-to-App deployment.
-# Secrets are marked as type `SECRET` and should be set via the DigitalOcean Web Dashboard.
-
-name: nxtstile-wp
+name: slotify-app
 services:
   - name: slotify-web
-    # Git integration settings (DigitalOcean will ask to connect your repo)
     github:
       repo: 240301370033-eng/nxtstile-wp
       branch: main
       deploy_on_push: true
-    
-    # Sizing configuration (basic-xxs is the starting tier, costing ~$5.00/month)
-    instance_count: 1
     instance_size_slug: basic-xxs
-    
-    # Internal HTTP routing
+    instance_count: 1
     http_port: 3000
     routes:
       - path: /
-
-    # Secure Environment Variables Configuration
     envs:
-      # Direct PostgreSQL connection URL (Needed at both build and run times)
       - key: DATABASE_URL
         scope: RUN_AND_BUILD_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
-      # Cryptographic JWT signing secret (Run time only)
+        type: SECRET
       - key: JWT_SECRET
         scope: RUN_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
-      # Meta WhatsApp API configurations
+        type: SECRET
       - key: WHATSAPP_VERIFY_TOKEN
         scope: RUN_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
+        type: SECRET
       - key: WHATSAPP_APP_SECRET
         scope: RUN_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
+        type: SECRET
       - key: WHATSAPP_API_VERSION
         scope: RUN_TIME
         value: "v19.0"
-
       - key: CRON_SECRET
         scope: RUN_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
-# DigitalOcean Native Scheduler for Automated Reminders
+        type: SECRET
 jobs:
   - name: reminders-cron
-    # Runs on a strict 30-minute cron schedule inside DigitalOcean
+    kind: SCHEDULED
     schedule: "*/30 * * * *"
-    instance_count: 1
-    instance_size_slug: basic-xxs
-    
-    # Leverages the official Docker Hub curl image (lightweight and secure)
     image:
       registry_type: DOCKER_HUB
-      repository: curlimages/curl
+      registry: curlimages
+      repository: curl
       tag: latest
-      
-    # Trigger the cron endpoint securely over HTTPS
-    # DigitalOcean automatically injects the ${APP_URL} variable containing your public domain
-    run_command: curl -s -X GET -H "Authorization: Bearer ${CRON_SECRET}" https://${APP_URL}/api/cron/reminders
-    
+    run_command: curl -s -X GET -H "Authorization: Bearer $${CRON_SECRET}" https://$${APP_URL}/api/cron/reminders
     envs:
       - key: CRON_SECRET
         scope: RUN_TIME
-        type: SECRET # Set value in DigitalOcean Dashboard
-
+        type: SECRET

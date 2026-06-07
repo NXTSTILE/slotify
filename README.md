@@ -107,12 +107,11 @@ DigitalOcean App Platform is fully managed, offers free SSL certificates, and up
 
 1. **Push your code** to a private GitHub repository.
 2. Go to the **DigitalOcean Web Console** -> **Apps** -> **Create App**.
-3. Select **GitHub** and connect your Nxtstile repository.
+3. Select **GitHub** and connect the GitHub repo `240301370033-eng/nxtstile-wp`.
 4. The system will automatically detect the Next.js setup via the custom `.do/app.yaml` file.
 5. In the **Environment Variables** step, you will be prompted to supply values for all keys marked as `SECRET`. Retrieve these values from your local `.env` file and input them securely:
-   - `NEXT_PUBLIC_SUPABASE_URL` (Build and Run time)
-   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Build and Run time)
-   - `SUPABASE_SERVICE_ROLE_KEY` (Run time)
+   - `DATABASE_URL` (Run and Build time)
+   - `JWT_SECRET` (Run time)
    - `WHATSAPP_VERIFY_TOKEN` (Run time)
    - `WHATSAPP_APP_SECRET` (Run time)
    - `CRON_SECRET` (Run time)

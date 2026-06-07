@@ -1,65 +1,46 @@
-# Stage 1: Dependency Installation
-FROM node:20-alpine AS deps
-# Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
+FROM node:18-alpine AS base
+
+# Install dependencies only when needed
+FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
-
-# Copy lockfiles and dependency manifest
 COPY package.json package-lock.json ./
-# Clean install dependencies
 RUN npm ci
 
-# Stage 2: Code Compilation
-FROM node:20-alpine AS builder
+# Rebuild the source code only when needed
+FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Next.js collects completely anonymous telemetry data about general usage.
-# We disable it during build and runtime to enhance performance and privacy.
-ENV NEXT_TELEMETRY_DISABLED 1
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-# Note: If database connection is needed at build time, supply it here.
-ARG DATABASE_URL
-ENV DATABASE_URL=$DATABASE_URL
-
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 
 RUN npm run build
 
-# Stage 3: Production Runner
-FROM node:20-alpine AS runner
+# Production image, copy all the files and run next
+FROM base AS runner
 WORKDIR /app
 
-RUN apk add --no-cache libc6-compat
-
 ENV NODE_ENV production
-ENV NEXT_TELEMETRY_DISABLED 1
 
-# Create non-root system user and group for container security
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-# Copy static assets and public files
+# Note: This assumes next.config.mjs has output: 'standalone'
 COPY --from=builder /app/public ./public
-
-# Set up proper caching directory permissions
-RUN mkdir .next
-RUN chown nextjs:nodejs .next
-
-# Leverage Next.js output standalone option to reduce image size (requires output: "standalone" in next.config.mjs)
+# Automatically leverage output traces to reduce image size
+# https://nextjs.org/docs/advanced-features/output-file-tracing
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy migrations runner and database schema definitions
-COPY --from=builder --chown=nextjs:nodejs /app/run-migrations.js ./run-migrations.js
-COPY --from=builder --chown=nextjs:nodejs /app/supabase ./supabase
-COPY --from=builder --chown=nextjs:nodejs /app/start.js ./start.js
 
 USER nextjs
 
 EXPOSE 3000
-ENV PORT 3000
-ENV HOSTNAME "0.0.0.0"
 
-# Bootstrap runner triggers migrations then boots next.js standalone server
-CMD ["node", "start.js"]
+ENV PORT 3000
+
+CMD ["node", "server.js"]

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { addMinutes } from "date-fns";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { assignStaff } from "@/lib/booking/staffAssignment";
+import { assignQueue } from "@/lib/booking/queueAssignment";
 
 /**
  * Secures dashboard actions by verifying user session and fetching their active salon.
@@ -588,33 +588,30 @@ export async function addWalkInBookingAction(formData: FormData) {
     const totalDuration = dbServices.reduce((sum, s) => sum + s.duration_minutes, 0);
     const totalPrice = dbServices.reduce((sum, s) => sum + Number(s.price), 0);
 
-    // 4a. Smart staff assignment — each staff member is checked independently.
-    //     requestedStart = NOW so each staff's earliest free slot from this moment is found.
-    //     If staff B is free from 9:00 AM and staff A is busy until 10:00, staff B gets 9:00.
-    const staffResult = await assignStaff(
+    // 4a. Smart queue assignment — each active queue is checked independently.
+    //     requestedStart = NOW so each queue's earliest free slot from this moment is found.
+    const queueResult = await assignQueue(
       salon.id,
-      serviceIds,
       addMinutes(new Date(), 2), // use a fresh "now" for the initial search window
       totalDuration
     );
 
     // Re-sample "now" RIGHT HERE — after all async DB work — so the stored start_time
-    // is never stale from before assignStaff's round-trips completed.
+    // is never stale from before assignQueue's round-trips completed.
     const now = new Date();
     const requestedStart = addMinutes(now, 2); // 2-min grace for walk-in
 
-    // If staff found, use their computed available start; otherwise queue after the salon's latest end
+    // If queue found, use their computed available start; otherwise queue after the salon's latest end
     let startTime: Date;
-    const staffId = staffResult?.staffId ?? null;
+    const queueId = queueResult?.queueId ?? null;
 
-    if (staffResult) {
-      // Use staff's own next available slot, but ensure it's not in the past
-      // (re-anchor to fresh now if assignStaff took long enough to make it stale)
-      startTime = staffResult.assignedStartUtc < requestedStart
+    if (queueResult) {
+      // Use queue's own next available slot, but ensure it's not in the past
+      startTime = queueResult.assignedStartUtc < requestedStart
         ? requestedStart
-        : staffResult.assignedStartUtc;
+        : queueResult.assignedStartUtc;
     } else {
-      // No staff configured — fall back to salon-level queue
+      // No queue configured — fall back to salon-level queue
       const lastAptRes = await client.query(
         `SELECT end_time FROM public.appointments 
          WHERE salon_id = $1 AND status IN ('pending', 'confirmed')
@@ -634,9 +631,9 @@ export async function addWalkInBookingAction(formData: FormData) {
     // 4b. Insert Appointment
     const aptInsert = await client.query(
       `INSERT INTO public.appointments 
-       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, staff_id) 
+       (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, queue_id) 
        VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', $7) RETURNING id`,
-      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDuration, totalPrice, staffId]
+      [salon.id, customerId, startTime.toISOString(), endTime.toISOString(), totalDuration, totalPrice, queueId]
     );
     const appointmentId = aptInsert.rows[0].id;
 

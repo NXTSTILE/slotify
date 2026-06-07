@@ -2,8 +2,9 @@
 
 import { addDays, format, isSameDay, startOfWeek } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { updateAppointmentStatusAction } from "@/app/actions/salon";
+import { cancelAppointmentAction, rescheduleAppointmentAction } from "@/app/actions/queues";
 import { SALON_TIMEZONE } from "@/lib/constants";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { toast } from "sonner";
 
 type Row = {
   id: string;
@@ -27,7 +29,8 @@ type Row = {
   status: string;
   total_price: number;
   total_duration_minutes: number;
-  staff_name: string | null;
+  queue_id: string | null;
+  queue_name: string | null;
   customers: { name: string; phone: string } | null;
   appointment_services:
     | { service_id: string; services: { name: string } | null }[]
@@ -40,9 +43,11 @@ function formatLocal(iso: string) {
 
 export function AppointmentsView({
   initial,
+  activeQueues,
 }: {
   initial: Row[];
   salonName: string;
+  activeQueues: { id: string; name: string }[];
 }) {
   const [view, setView] = useState<"week" | "day">("week");
   const [anchor, setAnchor] = useState(() => new Date());
@@ -160,13 +165,13 @@ export function AppointmentsView({
                           {format(formatLocal(a.start_time), "hh:mm a")} ·{" "}
                           {a.customers?.name ?? "Customer"}
                         </span>
-                        {a.staff_name && (
+                        {a.queue_name && (
                           <span className="text-xs text-muted-foreground">
-                            👤 {a.staff_name}
+                            📋 {a.queue_name}
                           </span>
                         )}
                       </span>
-                      <Badge variant="outline">{a.status}</Badge>
+                      <Badge variant="outline" className="capitalize">{a.status}</Badge>
                     </button>
                   </li>
                 ))
@@ -184,11 +189,11 @@ export function AppointmentsView({
           {openId ? (
             <AppointmentDetailBody
               row={dayList.find((x) => x.id === openId) ?? initial.find((x) => x.id === openId)!}
+              activeQueues={activeQueues}
             />
           ) : null}
         </DialogContent>
       </Dialog>
-
     </div>
   );
 }
@@ -198,56 +203,131 @@ function parseLocalDay(key: string) {
   return new Date(y!, (m ?? 1) - 1, d!);
 }
 
-function AppointmentDetailBody({ row }: { row: Row }) {
+function AppointmentDetailBody({ 
+  row,
+  activeQueues,
+}: { 
+  row: Row;
+  activeQueues: { id: string; name: string }[];
+}) {
+  const [pending, startTransition] = useTransition();
+
   const svc =
     row.appointment_services
       ?.map((x) => x.services?.name ?? "Service")
       .join(", ") ?? "—";
 
+  const handleComplete = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    startTransition(async () => {
+      await updateAppointmentStatusAction(fd);
+      toast.success("Appointment completed!");
+    });
+  };
+
+  const handleCancel = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    startTransition(async () => {
+      const res = await cancelAppointmentAction(fd);
+      if (res?.error) {
+        toast.error(res.error);
+      } else {
+        toast.success("Appointment cancelled (alert queued for delivery).");
+      }
+    });
+  };
+
+  const handleReschedule = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    startTransition(async () => {
+      const res = await rescheduleAppointmentAction(fd);
+      if (res?.error) {
+        toast.error(res.error);
+      } else {
+        toast.success("Appointment reassigned (alert queued for delivery).");
+      }
+    });
+  };
+
   return (
     <div className="space-y-4 text-sm">
       <div>
-        <p className="font-medium">{row.customers?.name}</p>
+        <p className="font-medium text-base">{row.customers?.name}</p>
         <p className="text-muted-foreground">{row.customers?.phone}</p>
       </div>
-      <p>
+      <p className="font-medium text-foreground/80">
         {format(formatLocal(row.start_time), "MMM d, yyyy hh:mm a")} –{" "}
         {format(formatLocal(row.end_time), "hh:mm a")}
       </p>
-      {row.staff_name && (
+      {row.queue_name && (
         <p className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">👤 Staff:</span>
-          <span className="font-medium">{row.staff_name}</span>
+          <span className="text-muted-foreground">📋 Queue:</span>
+          <span className="font-medium">{row.queue_name}</span>
         </p>
       )}
       <p>
-        Services: {svc}
+        <span className="text-muted-foreground">Services:</span> {svc}
       </p>
       <p>
-        Duration {row.total_duration_minutes} min · ₹{Number(row.total_price).toFixed(2)}
+        <span className="text-muted-foreground">Duration:</span> {row.total_duration_minutes} min · <span className="font-medium">₹{Number(row.total_price).toFixed(2)}</span>
       </p>
-      <Badge>{row.status}</Badge>
+      <div>
+        <Badge variant="outline" className="capitalize">{row.status}</Badge>
+      </div>
+
       {(row.status === "pending" || row.status === "confirmed") && (
-        <div className="flex flex-wrap gap-2 border-t pt-4">
-          <form action={updateAppointmentStatusAction}>
+        <div className="space-y-4 border-t pt-4">
+          {/* Complete action */}
+          <form onSubmit={handleComplete} className="flex items-center gap-2">
             <input type="hidden" name="id" value={row.id} />
             <input type="hidden" name="status" value="completed" />
-            <Button type="submit" size="sm">
-              Mark completed
+            <Button type="submit" size="sm" disabled={pending}>
+              Mark Completed
             </Button>
           </form>
-          <form action={updateAppointmentStatusAction} className="max-w-sm space-y-2">
+
+          {/* Reschedule action */}
+          <form onSubmit={handleReschedule} className="space-y-2">
             <input type="hidden" name="id" value={row.id} />
-            <input type="hidden" name="status" value="cancelled" />
-            <Label htmlFor={`reason-${row.id}`}>Cancel with optional reason</Label>
+            <Label htmlFor={`reschedule-select-${row.id}`} className="text-xs font-semibold text-muted-foreground">Assign to Queue</Label>
+            <div className="flex gap-2">
+              <select
+                id={`reschedule-select-${row.id}`}
+                name="queue_id"
+                defaultValue={row.queue_id || ""}
+                disabled={pending}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <option value="">No Queue (Unassigned)</option>
+                {activeQueues.map((q) => (
+                  <option key={q.id} value={q.id}>
+                    {q.name}
+                  </option>
+                ))}
+              </select>
+              <Button type="submit" size="sm" variant="secondary" disabled={pending}>
+                Reassign
+              </Button>
+            </div>
+          </form>
+
+          {/* Cancel action */}
+          <form onSubmit={handleCancel} className="space-y-2 bg-destructive/5 rounded-lg p-3 border border-destructive/10">
+            <input type="hidden" name="id" value={row.id} />
+            <Label htmlFor={`reason-${row.id}`} className="text-xs font-semibold text-destructive/80">Cancel Appointment</Label>
             <Textarea
               id={`reason-${row.id}`}
               name="reason"
-              placeholder="Reason (optional)"
+              placeholder="Cancellation reason (notified to customer)"
               rows={2}
+              disabled={pending}
+              className="bg-background border-input"
             />
-            <Button type="submit" variant="destructive" size="sm">
-              Cancel appointment
+            <Button type="submit" variant="destructive" size="sm" className="w-full" disabled={pending}>
+              Cancel Appointment
             </Button>
           </form>
         </div>

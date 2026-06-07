@@ -11,7 +11,7 @@ import {
   LogOut,
   Scissors,
   Settings,
-  UserRound,
+  ListOrdered,
   Users,
   X,
 } from "lucide-react";
@@ -20,7 +20,7 @@ const links = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard, exact: true },
   { href: "/dashboard/appointments", label: "Appointments", icon: CalendarDays, exact: false },
   { href: "/dashboard/services", label: "Services", icon: Scissors, exact: false },
-  { href: "/dashboard/staff", label: "Staff", icon: UserRound, exact: false },
+  { href: "/dashboard/queues", label: "Queues", icon: ListOrdered, exact: false },
   { href: "/dashboard/customers", label: "Customers", icon: Users, exact: false },
   { href: "/dashboard/settings", label: "Settings", icon: Settings, exact: false },
 ];

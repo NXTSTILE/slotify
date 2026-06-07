@@ -115,7 +115,7 @@ export default async function DashboardHomePage() {
 
     // 7. Load active services list for Walk-In booking dialog
     const svcRes = await db.query(
-      "SELECT id, name, price FROM public.services WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
+      "SELECT id, name, price FROM public.subservices WHERE salon_id = $1 AND is_active = true ORDER BY display_order ASC",
       [salon.id]
     );
     const services = svcRes.rows;

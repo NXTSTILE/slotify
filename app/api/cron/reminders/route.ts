@@ -30,7 +30,69 @@ export async function GET(request: Request) {
   const shortTermStartMax = addHours(now, 1.5);
 
   try {
-    // Fetch pending confirmed appointments meeting either condition
+    // PART A: Process pending reschedule/cancellation notifications
+    const pendingNotifsRes = await db.query(
+      `SELECT n.id as notification_id, n.type as notification_type,
+              a.id as appointment_id, a.start_time, a.status, a.cancellation_reason, a.created_at as appointment_created_at,
+              c.phone as customer_phone, c.name as customer_name,
+              s.id as salon_id, s.name as salon_name, s.whatsapp_phone_number_id, s.whatsapp_access_token,
+              cs.updated_at as last_customer_message_at
+       FROM public.notifications n
+       JOIN public.appointments a ON a.id = n.appointment_id
+       JOIN public.customers c ON c.id = a.customer_id
+       JOIN public.salons s ON s.id = n.salon_id
+       LEFT JOIN public.conversation_states cs ON cs.customer_phone = c.phone AND cs.salon_id = s.id
+       WHERE n.type IN ('cancellation', 'reschedule') AND n.whatsapp_sent = false`
+    );
+
+    for (const notif of pendingNotifsRes.rows) {
+      const pid = notif.whatsapp_phone_number_id;
+      const tok = notif.whatsapp_access_token || process.env.WHATSAPP_ACCESS_TOKEN;
+      const phone = notif.customer_phone;
+
+      if (pid && tok && phone) {
+        // Enforce 12-hour customer care window check
+        const lastMsg = notif.last_customer_message_at 
+          ? new Date(notif.last_customer_message_at) 
+          : new Date(notif.appointment_created_at);
+        const diffHours = (Date.now() - lastMsg.getTime()) / (1000 * 60 * 60);
+
+        if (diffHours <= 12) {
+          const { sendWhatsAppText } = await import("@/lib/whatsapp/send");
+          let bodyText = "";
+          if (notif.notification_type === "cancellation") {
+            bodyText = `We're sorry, your appointment at *${notif.salon_name}* has been cancelled by the salon.`;
+            if (notif.cancellation_reason && notif.cancellation_reason.trim()) {
+              bodyText += `\nReason: ${notif.cancellation_reason.trim()}`;
+            }
+            bodyText += `\n\nSend *hi* to rebook at another time.`;
+          } else if (notif.notification_type === "reschedule") {
+            bodyText = `Your appointment at *${notif.salon_name}* has been rescheduled to a different queue. Send *hi* to see your updated details.`;
+          }
+
+          if (bodyText) {
+            try {
+              const res = await sendWhatsAppText(pid, tok, { toE164: phone, body: bodyText });
+              if (!res.ok) {
+                console.error("[cron/reminders] Failed to send notification:", res.error);
+              }
+            } catch (err: any) {
+              console.error("[cron/reminders] Error sending notification:", err.message);
+            }
+          }
+        } else {
+          console.warn(`[cron/reminders] Skipping notification ${notif.notification_id} - customer last messaged ${diffHours.toFixed(1)} hours ago (exceeds 12h window)`);
+        }
+      }
+
+      // Mark notification as sent so we don't try again
+      await db.query(
+        "UPDATE public.notifications SET whatsapp_sent = true WHERE id = $1",
+        [notif.notification_id]
+      );
+    }
+
+    // PART B: Fetch pending confirmed appointments meeting either condition for reminders
     const aptRes = await db.query(
       `SELECT id, salon_id, start_time, customer_id, reminder_sent 
        FROM public.appointments 

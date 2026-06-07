@@ -12,7 +12,7 @@ import {
   getAvailableWindows,
   parseDdMmYyyyKolkata,
 } from "@/lib/booking/slots";
-import { assignStaff } from "@/lib/booking/staffAssignment";
+import { assignQueue } from "@/lib/booking/queueAssignment";
 import {
   sendWhatsAppText,
   sendWhatsAppList,
@@ -29,10 +29,7 @@ const CtxSchema = z.object({
   currentGroupIndex: z.number().int().optional(),
   subserviceIds: z.array(z.string().uuid()).optional(),
   frozenAppointmentId: z.string().uuid().optional(),
-  pendingCancelAppointmentId: z.string().uuid().optional(),
-  pendingReschedule: z.boolean().optional(),
-  assignedStaffId: z.string().uuid().optional(),
-  assignedStaffName: z.string().optional(),
+  assignedQueueId: z.string().uuid().optional(),
 });
 
 type Ctx = z.infer<typeof CtxSchema>;
@@ -94,8 +91,7 @@ function tokenizeKeywords(text: string): string | null {
   const t = text.trim().toUpperCase();
   const map: Record<string, string> = {
     HELP: "HELP", PRICE: "SERVICES", SERVICES: "SERVICES", LOCATION: "LOCATION",
-    HOURS: "HOURS", CONTACT: "CONTACT", POLICY: "POLICY", CANCEL: "CANCEL",
-    RESCHEDULE: "RESCHEDULE", BOOK: "BOOK",
+    HOURS: "HOURS", CONTACT: "CONTACT", POLICY: "POLICY", BOOK: "BOOK",
   };
   return map[t] ?? null;
 }
@@ -183,7 +179,7 @@ export async function handleConversationMessage(salonId: string, customerPhoneRa
   }
 
   if (kw === "HELP") {
-    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `*🛠️ Help & Commands*\n\n*SERVICES* — 📋 List services\n*LOCATION* — 📍 Address\n*HOURS* — 🕒 Hours\n*CONTACT* — 📞 Phone\n*POLICY* — 📜 Policy\n*CANCEL* — ❌ Cancel\n*RESCHEDULE* — 🔄 Reschedule\n\n_Send *hi* to book._` }));
+    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `*🛠️ Help & Commands*\n\n*SERVICES* — 📋 List services\n*LOCATION* — 📍 Address\n*HOURS* — 🕒 Hours\n*CONTACT* — 📞 Phone\n*POLICY* — 📜 Policy\n\n_Send *hi* to start a new booking._` }));
     return;
   }
   if (kw === "SERVICES") { await sendServiceCatalog(salon, customerPhone); return; }
@@ -197,27 +193,6 @@ export async function handleConversationMessage(salonId: string, customerPhoneRa
     await ensureConversationRow(salonId, customerPhone, "SELECTING_GENDER", {});
     await sendGenderMenu(salon, customerPhone);
     return;
-  }
-
-  if (kw === "CANCEL") {
-    const apt = await findActiveAppointment(salonId, customerPhone);
-    if (!apt) { await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "You have no active booking." })); return; }
-    await ensureConversationRow(salonId, customerPhone, state, { ...ctx, pendingCancelAppointmentId: apt.id });
-    await sendAuth(salon, (pid, tok) => sendWhatsAppButtons(pid, tok, { toE164: customerPhone, bodyText: "Cancel appointment?", buttons: [{ id: "cn_yes", title: "Yes, cancel" }, { id: "cn_no", title: "Keep it" }] }));
-    return;
-  }
-
-  if (ctx.pendingCancelAppointmentId && incoming.kind === "interactive") {
-    if (incoming.id === "cn_yes") {
-      await ensureConversationRow(salonId, customerPhone, "IDLE", {});
-      await cancelAppointmentById(salonId, ctx.pendingCancelAppointmentId, customerPhone);
-      return;
-    }
-    if (incoming.id === "cn_no") {
-      await ensureConversationRow(salonId, customerPhone, state, { ...ctx, pendingCancelAppointmentId: undefined });
-      await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "✅ Kept." }));
-      return;
-    }
   }
 
   if (state === "BOOKED") {
@@ -491,16 +466,16 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
       return;
     }
 
-    const staffResult = await assignStaff(salon.id, selectedSubs, selectedWindow.startUtc, totalDur);
+    // Assign to the best available queue (earliest gap)
+    const queueResult = await assignQueue(salon.id, selectedWindow.startUtc, totalDur);
     let assignedStartUtc: Date;
-    let assignedStaffId: string | undefined;
-    let assignedStaffName: string | undefined;
+    let assignedQueueId: string | undefined;
 
-    if (staffResult) {
-      assignedStartUtc = staffResult.assignedStartUtc;
-      assignedStaffId = staffResult.staffId;
-      assignedStaffName = staffResult.staffName;
+    if (queueResult) {
+      assignedStartUtc = queueResult.assignedStartUtc;
+      assignedQueueId = queueResult.queueId;
     } else {
+      // No queues configured — use salon-level queue
       const busyRes = await db.query(
         `SELECT end_time FROM public.appointments WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') AND start_time >= $2 AND start_time < $3 ORDER BY end_time DESC LIMIT 1`,
         [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
@@ -522,8 +497,8 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
     }
 
     const frozenInsert = await db.query(
-      `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, staff_id) VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
-      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedStaffId ?? null]
+      `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, queue_id) VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
+      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedQueueId ?? null]
     );
     const frozenId = frozenInsert.rows[0].id;
 
@@ -532,7 +507,7 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
     }
 
     await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
-      ...ctx, subserviceIds: selectedSubs, frozenAppointmentId: frozenId, assignedStaffId, assignedStaffName
+      ...ctx, subserviceIds: selectedSubs, frozenAppointmentId: frozenId, assignedQueueId,
     });
 
     const timeStr = format(toZonedTime(assignedStartUtc, SALON_TIMEZONE), "hh:mm a");

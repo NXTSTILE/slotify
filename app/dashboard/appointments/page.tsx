@@ -23,7 +23,7 @@ export default async function AppointmentsPage() {
 
   // 3. Load all appointments for the salon
   const aptRes = await db.query(
-    `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id, staff_id 
+    `SELECT id, start_time, end_time, status, total_price, total_duration_minutes, customer_id, queue_id 
      FROM public.appointments 
      WHERE salon_id = $1 AND is_deleted = false
      ORDER BY start_time ASC`,
@@ -43,14 +43,14 @@ export default async function AppointmentsPage() {
   }
   const custMap = new Map(custs.map((c) => [c.id, c]));
 
-  // 5. Query appointment service relations using a highly efficient standard SQL JOIN
+  // 5. Query appointment service relations joining subservices
   const aptIdList = aptRows.map((a) => a.id);
   let lines: any[] = [];
   if (aptIdList.length > 0) {
     const linesRes = await db.query(
       `SELECT aps.appointment_id, s.name 
        FROM public.appointment_services aps 
-       JOIN public.services s ON aps.service_id = s.id 
+       JOIN public.subservices s ON aps.service_id = s.id 
        WHERE aps.appointment_id = ANY($1::uuid[])`,
       [aptIdList]
     );
@@ -64,21 +64,28 @@ export default async function AppointmentsPage() {
     servicesByApt.set(l.appointment_id, list);
   }
 
-  // 7. Bulk-fetch staff names
-  const staffIds = Array.from(
-    new Set(aptRows.map((a) => a.staff_id).filter(Boolean))
+  // 7. Bulk-fetch queue names
+  const queueIds = Array.from(
+    new Set(aptRows.map((a) => a.queue_id).filter(Boolean))
   );
-  let staffRows: any[] = [];
-  if (staffIds.length > 0) {
-    const staffRes = await db.query(
-      "SELECT id, name FROM public.staff WHERE id = ANY($1::uuid[])",
-      [staffIds]
+  let queueRows: any[] = [];
+  if (queueIds.length > 0) {
+    const queueRes = await db.query(
+      "SELECT id, name FROM public.queues WHERE id = ANY($1::uuid[])",
+      [queueIds]
     );
-    staffRows = staffRes.rows;
+    queueRows = queueRes.rows;
   }
-  const staffMap = new Map(staffRows.map((s) => [s.id, s.name as string]));
+  const queueMap = new Map(queueRows.map((q) => [q.id, q.name as string]));
 
-  // 8. Format initial appointments array structure for week-day rendering
+  // 7b. Fetch all active queues for rescheduling selection
+  const activeQueuesRes = await db.query(
+    "SELECT id, name FROM public.queues WHERE salon_id = $1 AND is_active = true ORDER BY name ASC",
+    [salon.id]
+  );
+  const activeQueues = activeQueuesRes.rows;
+
+  // 8. Format initial appointments array structure
   const initial = aptRows.map((a) => ({
     id: a.id,
     start_time: a.start_time,
@@ -87,7 +94,8 @@ export default async function AppointmentsPage() {
     total_price: a.total_price,
     total_duration_minutes: a.total_duration_minutes,
     customers: custMap.get(a.customer_id) ?? { name: "", phone: "" },
-    staff_name: a.staff_id ? (staffMap.get(a.staff_id) ?? null) : null,
+    queue_id: a.queue_id,
+    queue_name: a.queue_id ? (queueMap.get(a.queue_id) ?? null) : null,
     appointment_services: (servicesByApt.get(a.id) ?? []).map((name) => ({
       service_id: "",
       services: { name },
@@ -100,7 +108,7 @@ export default async function AppointmentsPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Appointments</h1>
         <p className="text-sm text-muted-foreground">Week + day view in {SALON_TIMEZONE}</p>
       </div>
-      <AppointmentsView initial={initial} salonName={salon.name} />
+      <AppointmentsView initial={initial} salonName={salon.name} activeQueues={activeQueues} />
     </div>
   );
 }

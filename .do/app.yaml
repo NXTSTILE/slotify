@@ -5,6 +5,7 @@ services:
       repo: 240301370033-eng/nxtstile-wp
       branch: main
       deploy_on_push: true
+    dockerfile_path: Dockerfile
     instance_size_slug: basic-xxs
     instance_count: 1
     http_port: 3000

@@ -37,10 +37,15 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Copy migration files and unified startup script
+COPY --from=builder --chown=nextjs:nodejs /app/run-migrations.js ./
+COPY --from=builder --chown=nextjs:nodejs /app/start.js ./
+COPY --from=builder --chown=nextjs:nodejs /app/supabase ./supabase
+
 USER nextjs
 
 EXPOSE 3000
 
 ENV PORT 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "start.js"]

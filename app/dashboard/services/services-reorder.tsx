@@ -230,7 +230,7 @@ function SubserviceRow({
             size="sm"
             className="ml-auto text-destructive"
             onClick={(e) => {
-              const form = e.currentTarget.closest("div")?.nextElementSibling as HTMLFormElement;
+              const form = e.currentTarget.closest("form")?.nextElementSibling as HTMLFormElement;
               if (form) form.requestSubmit();
             }}
           >

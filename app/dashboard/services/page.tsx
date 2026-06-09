@@ -20,28 +20,72 @@ export default async function ServicesPage() {
     redirect("/login");
   }
 
-  const salonRes = await db.query(
-    "SELECT id, custom_message FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
-    [session.userId]
-  );
-  const salon = salonRes.rows[0];
+  let salon: any = null;
+  let services: any[] = [];
+  let subservices: any[] = [];
+
+  try {
+    const salonRes = await db.query(
+      "SELECT id, custom_message FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
+      [session.userId]
+    );
+    salon = salonRes.rows[0];
+  } catch (error: any) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto my-10 bg-destructive/10 border border-destructive text-destructive rounded-lg space-y-4">
+        <h2 className="text-xl font-bold">Server-Side Exception Captured</h2>
+        <p className="font-semibold text-sm">This diagnostic screen is displayed to assist in identifying issues in the live environment.</p>
+        <div className="bg-background text-foreground p-4 rounded border font-mono text-xs overflow-auto max-h-96">
+          <p className="font-bold">Error Message:</p>
+          <p className="mb-4">{error.message}</p>
+          {error.stack && (
+            <>
+              <p className="font-bold">Stack Trace:</p>
+              <pre className="whitespace-pre-wrap">{error.stack}</pre>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Redirect outside try-catch
   if (!salon) {
     redirect("/setup");
   }
 
-  // Categories are now called "Services"
-  const serviceRes = await db.query(
-    "SELECT * FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC",
-    [salon.id]
-  );
-  const services = serviceRes.rows;
+  try {
+    // Categories are now called "Services"
+    const serviceRes = await db.query(
+      "SELECT * FROM public.services WHERE salon_id = $1 ORDER BY display_order ASC",
+      [salon.id]
+    );
+    services = serviceRes.rows;
 
-  // Services are now called "Subservices"
-  const subserviceRes = await db.query(
-    "SELECT * FROM public.subservices WHERE salon_id = $1 ORDER BY display_order ASC",
-    [salon.id]
-  );
-  const subservices = subserviceRes.rows;
+    // Services are now called "Subservices"
+    const subserviceRes = await db.query(
+      "SELECT * FROM public.subservices WHERE salon_id = $1 ORDER BY display_order ASC",
+      [salon.id]
+    );
+    subservices = subserviceRes.rows;
+  } catch (error: any) {
+    return (
+      <div className="p-6 max-w-2xl mx-auto my-10 bg-destructive/10 border border-destructive text-destructive rounded-lg space-y-4">
+        <h2 className="text-xl font-bold">Server-Side Exception Captured</h2>
+        <p className="font-semibold text-sm">This diagnostic screen is displayed to assist in identifying issues in the live environment.</p>
+        <div className="bg-background text-foreground p-4 rounded border font-mono text-xs overflow-auto max-h-96">
+          <p className="font-bold">Error Message:</p>
+          <p className="mb-4">{error.message}</p>
+          {error.stack && (
+            <>
+              <p className="font-bold">Stack Trace:</p>
+              <pre className="whitespace-pre-wrap">{error.stack}</pre>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">

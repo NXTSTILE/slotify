@@ -185,3 +185,77 @@ export async function createGlobalUserAction(
     return { success: false, message: err.message || "Failed to create user." };
   }
 }
+
+/**
+ * Creates both user credentials and salon metadata in a single transaction.
+ */
+export async function createGlobalSalonAccountAction(
+  email: string,
+  password: string,
+  salonName: string,
+  phone: string
+): Promise<ActionResponse> {
+  let client;
+  try {
+    await verifySuperAdmin();
+
+    if (!email || !password || !salonName || !phone) {
+      return { success: false, message: "Email, password, salon name, and phone number are required." };
+    }
+
+    if (password.trim().length < 8) {
+      return { success: false, message: "Password must be at least 8 characters." };
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if user already exists
+    const checkRes = await db.query(
+      "SELECT id FROM public.users WHERE email = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (checkRes.rows.length > 0) {
+      return { success: false, message: "A user with this email already exists." };
+    }
+
+    // Hash the password securely with bcrypt
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Acquire database client for transaction
+    client = await db.pool.connect();
+    await client.query("BEGIN");
+
+    // Insert user
+    const userInsertRes = await client.query(
+      "INSERT INTO public.users (email, password_hash) VALUES ($1, $2) RETURNING id",
+      [normalizedEmail, passwordHash]
+    );
+    const userId = userInsertRes.rows[0].id;
+
+    // Insert salon
+    await client.query(
+      "INSERT INTO public.salons (owner_id, name, phone) VALUES ($1, $2, $3)",
+      [userId, salonName.trim(), phone.trim()]
+    );
+
+    await client.query("COMMIT");
+
+    revalidatePath("/superadmin");
+    return { success: true, message: "Salon account created successfully." };
+  } catch (err: any) {
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        console.error("Rollback failed:", rollbackErr);
+      }
+    }
+    console.error("[createGlobalSalonAccountAction Error]", err.message);
+    return { success: false, message: err.message || "Failed to create salon account." };
+  } finally {
+    if (client) {
+      client.release();
+    }
+  }
+}
+

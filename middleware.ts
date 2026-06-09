@@ -9,6 +9,11 @@ import { jwtVerify } from "jose";
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   
+  // Since public registration is disabled, redirect /signup to /login
+  if (pathname === "/signup") {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+  
   // Route guarding logic
   const isDashboardRoute = pathname.startsWith("/dashboard");
   const isSuperAdminRoute = pathname.startsWith("/superadmin");

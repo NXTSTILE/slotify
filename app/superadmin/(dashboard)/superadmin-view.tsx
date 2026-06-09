@@ -15,6 +15,7 @@ import {
   deleteGlobalAppointmentAction,
   createGlobalSalonAction,
   createGlobalUserAction,
+  createGlobalSalonAccountAction,
 } from "@/app/actions/superadmin";
 import {
   Shield,
@@ -92,6 +93,13 @@ export function SuperAdminView({
   const [editingSalon, setEditingSalon] = useState<typeof salons[0] | null>(null);
   const [creatingSalon, setCreatingSalon] = useState<boolean>(false);
   const [creatingUser, setCreatingUser] = useState<boolean>(false);
+  const [creatingSalonAccount, setCreatingSalonAccount] = useState<boolean>(false);
+
+  // Create Salon Account Form State
+  const [newAccountEmail, setNewAccountEmail] = useState("");
+  const [newAccountPassword, setNewAccountPassword] = useState("");
+  const [newAccountSalonName, setNewAccountSalonName] = useState("");
+  const [newAccountPhone, setNewAccountPhone] = useState("");
 
   // Create User Form State
   const [newUserEmail, setNewUserEmail] = useState("");
@@ -185,6 +193,35 @@ export function SuperAdminView({
         setCreatingUser(false);
         setNewUserEmail("");
         setNewUserPassword("");
+      } else {
+        toast.error(res.message);
+      }
+    });
+  };
+
+  const handleCreateSalonAccount = () => {
+    if (!newAccountEmail || !newAccountPassword || !newAccountSalonName || !newAccountPhone) {
+      toast.error("Please fill in all fields.");
+      return;
+    }
+    if (newAccountPassword.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await createGlobalSalonAccountAction(
+        newAccountEmail,
+        newAccountPassword,
+        newAccountSalonName,
+        newAccountPhone
+      );
+      if (res.success) {
+        toast.success(res.message);
+        setCreatingSalonAccount(false);
+        setNewAccountEmail("");
+        setNewAccountPassword("");
+        setNewAccountSalonName("");
+        setNewAccountPhone("");
       } else {
         toast.error(res.message);
       }
@@ -459,8 +496,11 @@ export function SuperAdminView({
                   className="pl-9 pr-4 h-9 w-full rounded-md border border-input bg-transparent py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </div>
-              <Button size="sm" onClick={() => setCreatingSalon(true)} className="gap-1.5 shadow-sm">
-                <Plus className="h-4 w-4" /> Add Salon
+              <Button size="sm" onClick={() => setCreatingSalonAccount(true)} className="gap-1.5 shadow-sm bg-primary hover:bg-primary/90">
+                <Plus className="h-4 w-4" /> Create Salon Account
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setCreatingSalon(true)} className="gap-1.5 shadow-sm">
+                <Building className="h-4 w-4" /> Allocate Salon
               </Button>
             </div>
           </CardHeader>
@@ -893,6 +933,70 @@ export function SuperAdminView({
               </Button>
               <Button size="sm" onClick={handleCreateUser} disabled={isPending}>
                 {isPending && <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />} Create User
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Salon Account Modal */}
+      {creatingSalonAccount && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-card border rounded-xl shadow-2xl p-6 overflow-hidden animate-in zoom-in-95 duration-200">
+            <h2 className="text-lg font-bold text-foreground flex items-center gap-2 mb-1">
+              <Building className="h-5 w-5 text-primary" /> Create Salon Account
+            </h2>
+            <p className="text-muted-foreground text-xs mb-4">
+              Create a new salon owner login and automatically allocate their salon in a single step.
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Salon Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Vintage Scissors"
+                  value={newAccountSalonName}
+                  onChange={(e) => setNewAccountSalonName(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Contact Phone</label>
+                <input
+                  type="text"
+                  placeholder="e.g. +91 9988776655"
+                  value={newAccountPhone}
+                  onChange={(e) => setNewAccountPhone(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Owner Email Address (User ID)</label>
+                <input
+                  type="email"
+                  placeholder="e.g. owner@example.com"
+                  value={newAccountEmail}
+                  onChange={(e) => setNewAccountEmail(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Password</label>
+                <input
+                  type="password"
+                  placeholder="At least 8 characters"
+                  value={newAccountPassword}
+                  onChange={(e) => setNewAccountPassword(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <Button variant="outline" size="sm" onClick={() => setCreatingSalonAccount(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleCreateSalonAccount} disabled={isPending}>
+                {isPending && <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />} Create Account
               </Button>
             </div>
           </div>

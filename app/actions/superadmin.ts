@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
+import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { jwtVerify } from "jose";
 
@@ -137,5 +138,50 @@ export async function createGlobalSalonAction(
   } catch (err: any) {
     console.error("[createGlobalSalonAction Error]", err.message);
     return { success: false, message: err.message || "Failed to create new salon." };
+  }
+}
+
+/**
+ * Creates a new user with email and password from the superadmin console.
+ */
+export async function createGlobalUserAction(
+  email: string,
+  password: string
+): Promise<ActionResponse> {
+  try {
+    await verifySuperAdmin();
+
+    if (!email || !password) {
+      return { success: false, message: "Email and password are required." };
+    }
+    if (password.trim().length < 8) {
+      return { success: false, message: "Password must be at least 8 characters." };
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if user already exists
+    const checkRes = await db.query(
+      "SELECT id FROM public.users WHERE email = $1 LIMIT 1",
+      [normalizedEmail]
+    );
+    if (checkRes.rows.length > 0) {
+      return { success: false, message: "A user with this email already exists." };
+    }
+
+    // Hash the password securely with bcrypt
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Insert user
+    await db.query(
+      "INSERT INTO public.users (email, password_hash) VALUES ($1, $2)",
+      [normalizedEmail, passwordHash]
+    );
+
+    revalidatePath("/superadmin");
+    return { success: true, message: "User created successfully." };
+  } catch (err: any) {
+    console.error("[createGlobalUserAction Error]", err.message);
+    return { success: false, message: err.message || "Failed to create user." };
   }
 }

@@ -26,6 +26,7 @@ type Subservice = {
 type ServiceGroup = {
   id: string;
   name: string;
+  gender_tag: string;
 };
 
 export function ServicesReorder({
@@ -52,6 +53,9 @@ export function ServicesReorder({
               <div className="flex items-center gap-2 font-medium">
                 {isExpanded ? <ChevronDown className="h-5 w-5" /> : <ChevronRight className="h-5 w-5" />}
                 {service.name} ({groupSubservices.length})
+                <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary capitalize">
+                  {service.gender_tag}
+                </span>
               </div>
               <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                 <form action={submitDeleteCategory}>

@@ -81,73 +81,7 @@ export async function signupAction(
   _prev: AuthFormState | undefined,
   formData: FormData
 ): Promise<AuthFormState> {
-  const parsed = signupSchema.safeParse({
-    email: formData.get("email"),
-    password: formData.get("password"),
-    salonName: formData.get("salonName"),
-    phone: formData.get("phone"),
-  });
-  if (!parsed.success) {
-    return { error: "Check all fields: password min 8 chars, salon name and phone required." };
-  }
-
-  const { email, password, salonName, phone } = parsed.data;
-  const normalizedEmail = email.toLowerCase().trim();
-
-  let client;
-  try {
-    // 1. Hash the password securely with bcrypt
-    const passwordHash = await bcrypt.hash(password, 10);
-
-    // 2. Establish a client for transaction management
-    client = await db.pool.connect();
-
-    // 3. Check if email already exists
-    const checkUser = await client.query(
-      "SELECT id FROM public.users WHERE email = $1 LIMIT 1",
-      [normalizedEmail]
-    );
-    if (checkUser.rows.length > 0) {
-      return { error: "An account with this email already exists." };
-    }
-
-    // 4. Execute Transaction
-    await client.query("BEGIN");
-
-    // Insert new user
-    const userInsert = await client.query(
-      "INSERT INTO public.users (email, password_hash) VALUES ($1, $2) RETURNING id",
-      [normalizedEmail, passwordHash]
-    );
-    const userId = userInsert.rows[0].id;
-
-    // Insert corresponding salon
-    await client.query(
-      "INSERT INTO public.salons (owner_id, name, phone) VALUES ($1, $2, $3)",
-      [userId, salonName, phone]
-    );
-
-    await client.query("COMMIT");
-
-    // 5. Set session cookie
-    await setSessionCookie(userId, normalizedEmail);
-
-  } catch (err: any) {
-    if (client) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {}
-    }
-    console.error("[Signup Action Error]", err.message);
-    return { error: `Failed to create user account: ${err.message}` };
-  } finally {
-    if (client) {
-      client.release();
-    }
-  }
-
-  // Redirect to dashboard
-  redirect("/dashboard");
+  return { error: "Public registration is disabled. Please contact the administrator to create an account." };
 }
 
 /**

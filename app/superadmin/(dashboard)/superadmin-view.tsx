@@ -14,6 +14,7 @@ import {
   deleteGlobalSalonAction,
   deleteGlobalAppointmentAction,
   createGlobalSalonAction,
+  createGlobalUserAction,
 } from "@/app/actions/superadmin";
 import {
   Shield,
@@ -90,6 +91,11 @@ export function SuperAdminView({
   // Modals / Selection States
   const [editingSalon, setEditingSalon] = useState<typeof salons[0] | null>(null);
   const [creatingSalon, setCreatingSalon] = useState<boolean>(false);
+  const [creatingUser, setCreatingUser] = useState<boolean>(false);
+
+  // Create User Form State
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
 
   // Edit Salon Form State
   const [editName, setEditName] = useState("");
@@ -157,6 +163,28 @@ export function SuperAdminView({
         setNewName("");
         setNewPhone("");
         setNewOwnerId("");
+      } else {
+        toast.error(res.message);
+      }
+    });
+  };
+
+  const handleCreateUser = () => {
+    if (!newUserEmail || !newUserPassword) {
+      toast.error("Please fill in all fields.");
+      return;
+    }
+    if (newUserPassword.length < 8) {
+      toast.error("Password must be at least 8 characters.");
+      return;
+    }
+    startTransition(async () => {
+      const res = await createGlobalUserAction(newUserEmail, newUserPassword);
+      if (res.success) {
+        toast.success(res.message);
+        setCreatingUser(false);
+        setNewUserEmail("");
+        setNewUserPassword("");
       } else {
         toast.error(res.message);
       }
@@ -510,15 +538,20 @@ export function SuperAdminView({
               <CardTitle className="text-lg font-bold">User Registries</CardTitle>
               <CardDescription>Monitor platform registrations, assign privileges, and delete accounts.</CardDescription>
             </div>
-            <div className="relative w-full sm:w-60">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <input
-                type="text"
-                placeholder="Search users..."
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                className="pl-9 pr-4 h-9 w-full rounded-md border border-input bg-transparent py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-              />
+            <div className="flex w-full sm:w-auto items-center gap-2">
+              <div className="relative flex-1 sm:w-60">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <input
+                  type="text"
+                  placeholder="Search users..."
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  className="pl-9 pr-4 h-9 w-full rounded-md border border-input bg-transparent py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                />
+              </div>
+              <Button size="sm" onClick={() => setCreatingUser(true)} className="gap-1.5 shadow-sm">
+                <UserPlus className="h-4 w-4" /> Add User
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="p-0 sm:p-6 overflow-x-auto">
@@ -816,6 +849,50 @@ export function SuperAdminView({
               </Button>
               <Button size="sm" onClick={handleCreateSalon} disabled={isPending}>
                 {isPending && <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />} Initialize Salon
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create User Modal */}
+      {creatingUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-card border rounded-xl shadow-2xl p-6 overflow-hidden animate-in zoom-in-95 duration-200">
+            <h2 className="text-lg font-bold text-foreground flex items-center gap-2 mb-1">
+              <UserPlus className="h-5 w-5 text-primary" /> Create User
+            </h2>
+            <p className="text-muted-foreground text-xs mb-4">
+              Enter credentials to create a new user account.
+            </p>
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Email Address (User ID)</label>
+                <input
+                  type="email"
+                  placeholder="e.g. owner@example.com"
+                  value={newUserEmail}
+                  onChange={(e) => setNewUserEmail(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-bold text-foreground block mb-1">Password</label>
+                <input
+                  type="password"
+                  placeholder="At least 8 characters"
+                  value={newUserPassword}
+                  onChange={(e) => setNewUserPassword(e.target.value)}
+                  className="w-full h-9 rounded-md border bg-transparent px-3 py-1 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <Button variant="outline" size="sm" onClick={() => setCreatingUser(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleCreateUser} disabled={isPending}>
+                {isPending && <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />} Create User
               </Button>
             </div>
           </div>

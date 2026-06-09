@@ -248,10 +248,14 @@ export async function deleteHolidayFormAction(
 
 const categorySchema = z.object({
   name: z.string().min(1),
+  gender_tag: z.enum(["male", "female", "unisex"]).optional().default("unisex"),
 });
 
 export async function addCategoryAction(formData: FormData) {
-  const parsed = categorySchema.safeParse({ name: formData.get("name") });
+  const parsed = categorySchema.safeParse({
+    name: formData.get("name"),
+    gender_tag: formData.get("gender_tag") || "unisex",
+  });
   if (!parsed.success) {
     return { error: "Category name required." };
   }
@@ -266,8 +270,8 @@ export async function addCategoryAction(formData: FormData) {
     const count = Number(countRes.rows[0].count);
 
     await db.query(
-      "INSERT INTO public.services (salon_id, name, display_order) VALUES ($1, $2, $3)",
-      [salon.id, parsed.data.name, count + 1]
+      "INSERT INTO public.services (salon_id, name, display_order, gender_tag) VALUES ($1, $2, $3, $4)",
+      [salon.id, parsed.data.name, count + 1, parsed.data.gender_tag]
     );
 
     revalidatePath("/dashboard/services");
@@ -496,6 +500,35 @@ export async function submitUpdateService(formData: FormData): Promise<void> {
 
 export async function submitDeleteService(formData: FormData): Promise<void> {
   await deleteServiceAction(formData);
+}
+
+const messageSchema = z.object({
+  custom_message: z.string().optional().nullable(),
+});
+
+export async function updateSalonMessageAction(formData: FormData) {
+  const parsed = messageSchema.safeParse({
+    custom_message: formData.get("custom_message"),
+  });
+  if (!parsed.success) {
+    return { error: "Invalid message payload." };
+  }
+  try {
+    const { salon } = await requireSalon();
+    const msg = parsed.data.custom_message ? parsed.data.custom_message.trim() : null;
+    await db.query(
+      "UPDATE public.salons SET custom_message = $1 WHERE id = $2",
+      [msg || null, salon.id]
+    );
+    revalidatePath("/dashboard/services");
+    return { ok: true as const };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Failed" };
+  }
+}
+
+export async function submitUpdateSalonMessage(formData: FormData): Promise<void> {
+  await updateSalonMessageAction(formData);
 }
 
 const appointmentUpdateSchema = z.object({

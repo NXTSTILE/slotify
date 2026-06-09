@@ -9,7 +9,31 @@ const fs = require('fs');
 const path = require('path');
 
 async function run() {
-  const rawConnectionString = process.env.DATABASE_URL;
+  let rawConnectionString = process.env.DATABASE_URL;
+
+  if (!rawConnectionString) {
+    try {
+      const dotenvPath = path.join(__dirname, '.env');
+      if (fs.existsSync(dotenvPath)) {
+        const envContent = fs.readFileSync(dotenvPath, 'utf8');
+        for (const line of envContent.split(/\r?\n/)) {
+          const match = line.match(/^\s*DATABASE_URL\s*=\s*(.*)\s*$/);
+          if (match) {
+            let val = match[1].trim();
+            // strip quotes if wrapped
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+              val = val.substring(1, val.length - 1);
+            }
+            process.env.DATABASE_URL = val;
+            rawConnectionString = val;
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[Migration] Failed to parse .env file:', err);
+    }
+  }
 
   if (!rawConnectionString) {
     console.log('[Migration] No DATABASE_URL found. Skipping migrations.');

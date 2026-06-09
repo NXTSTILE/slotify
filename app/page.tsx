@@ -67,15 +67,9 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             <Link
               href="/login"
-              className={cn(buttonVariants({ variant: "ghost", size: "sm" }))}
-            >
-              Sign in
-            </Link>
-            <Link
-              href="/signup"
               className={cn(buttonVariants({ size: "sm" }))}
             >
-              Get started free
+              Sign in
             </Link>
           </div>
         </div>
@@ -101,17 +95,11 @@ export default function HomePage() {
               You manage everything from a clean dashboard. No app. No hassle.
             </p>
             <div className="mt-10 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-              <Link href="/signup" className={cn(buttonVariants({ size: "lg" }), "px-8")}>
-                Create your salon dashboard
-              </Link>
               <Link
                 href="/login"
-                className={cn(
-                  buttonVariants({ variant: "outline", size: "lg" }),
-                  "px-8"
-                )}
+                className={cn(buttonVariants({ size: "lg" }), "px-8")}
               >
-                Sign in →
+                Sign in to your salon dashboard →
               </Link>
             </div>
             <p className="mt-4 text-xs text-muted-foreground">Free to start · No credit card</p>
@@ -175,10 +163,10 @@ export default function HomePage() {
               Set up your dashboard in minutes. Start taking WhatsApp bookings today.
             </p>
             <Link
-              href="/signup"
+              href="/login"
               className={cn(buttonVariants({ size: "lg" }), "mt-8 px-10")}
             >
-              Create free account
+              Sign in to your account
             </Link>
           </div>
         </section>

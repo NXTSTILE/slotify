@@ -5,6 +5,7 @@ import {
   submitAddCategory,
   submitAddService,
   submitDeleteCategory,
+  submitUpdateSalonMessage,
 } from "@/app/actions/salon";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ export default async function ServicesPage() {
   }
 
   const salonRes = await db.query(
-    "SELECT id FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
+    "SELECT id, custom_message FROM public.salons WHERE owner_id = $1 AND is_deleted = false LIMIT 1",
     [session.userId]
   );
   const salon = salonRes.rows[0];
@@ -51,16 +52,61 @@ export default async function ServicesPage() {
         </p>
       </div>
 
+      {salon.custom_message && (
+        <div className="rounded-lg border bg-accent/50 p-4 text-accent-foreground shadow-sm">
+          <p className="font-semibold text-sm">Active Announcement Notice:</p>
+          <p className="text-sm mt-1 whitespace-pre-wrap">{salon.custom_message}</p>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Salon Announcement Message</CardTitle>
+          <CardDescription>
+            Display a notice or message to remind yourself or other staff members.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form action={submitUpdateSalonMessage} className="space-y-4">
+            <textarea
+              name="custom_message"
+              placeholder="Type any message you want to print here..."
+              defaultValue={salon.custom_message || ""}
+              className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <Button type="submit" size="sm">
+              Save Message
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>New Service Group</CardTitle>
           <CardDescription>Top-level category for your WhatsApp catalog.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form action={submitAddCategory} className="flex flex-wrap gap-2">
-            <Input name="name" placeholder="Service group name (e.g., Hair)" required className="max-w-xs" />
+          <form action={submitAddCategory} className="flex flex-wrap items-end gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="category_name">Group Name</Label>
+              <Input id="category_name" name="name" placeholder="Service group name (e.g., Hair)" required className="max-w-xs" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="category_gender_tag">Gender Preference</Label>
+              <select
+                id="category_gender_tag"
+                name="gender_tag"
+                defaultValue="unisex"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+              >
+                <option value="unisex">Unisex</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            </div>
             <Button type="submit" size="sm">
-              Add Service
+              Add Service Group
             </Button>
           </form>
         </CardContent>
@@ -148,7 +194,7 @@ export default async function ServicesPage() {
       <Separator />
 
       <ServicesReorder
-        services={services.map((c) => ({ id: c.id, name: c.name }))}
+        services={services.map((c) => ({ id: c.id, name: c.name, gender_tag: c.gender_tag }))}
         subservices={subservices.map((s) => ({
           id: s.id,
           name: s.name,

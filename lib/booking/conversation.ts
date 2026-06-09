@@ -221,6 +221,9 @@ export async function handleConversationMessage(salonId: string, customerPhoneRa
     case "SELECTING_SUBSERVICES":
       await handleSelectingSubservices(salon, customerPhone, userText, ctx);
       break;
+    case "ASKING_LOCATION":
+      await handleAskingLocation(salon, customerPhone, incoming, ctx);
+      break;
     case "CONFIRMING_NAME":
       await handleConfirmingName(salon, customerPhone, userText, ctx);
       break;
@@ -334,6 +337,7 @@ async function handleSelectingDateSession(salon: SalonRow, customerPhone: string
      JOIN public.subservices sub ON sub.service_id = s.id
      WHERE s.salon_id = $1 
        AND sub.is_active = true 
+       AND (s.gender_tag = $2 OR s.gender_tag = 'unisex')
        AND (sub.gender_tag = $2 OR sub.gender_tag = 'unisex')
      ORDER BY s.display_order ASC`,
     [salon.id, ctx.gender || "unisex"]
@@ -358,6 +362,7 @@ async function handleSelectingServiceGroups(salon: SalonRow, customerPhone: stri
      JOIN public.subservices sub ON sub.service_id = s.id
      WHERE s.salon_id = $1 
        AND sub.is_active = true 
+       AND (s.gender_tag = $2 OR s.gender_tag = 'unisex')
        AND (sub.gender_tag = $2 OR sub.gender_tag = 'unisex')
      ORDER BY s.display_order ASC`,
     [salon.id, ctx.gender || "unisex"]
@@ -502,6 +507,65 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
       if (busyRes.rows.length > 0) assignedStartUtc = addMinutes(parseISO(busyRes.rows[0].end_time), APPOINTMENT_BUFFER_MINUTES);
     }
 
+    // Check if booking is for today in the salon timezone
+    const zonedNow = toZonedTime(new Date(), SALON_TIMEZONE);
+    const todayStr = format(zonedNow, "yyyy-MM-dd");
+    const selectedDayStr = format(toZonedTime(day, SALON_TIMEZONE), "yyyy-MM-dd");
+    const isToday = todayStr === selectedDayStr;
+
+    let shouldAskLocation = false;
+    if (isToday) {
+      const startOfDay = new Date(day);
+      startOfDay.setHours(0,0,0,0);
+      const endOfDay = new Date(day);
+      endOfDay.setHours(23,59,59,999);
+
+      const busyRes = await db.query(
+        `SELECT start_time, end_time 
+         FROM public.appointments 
+         WHERE salon_id = $1 
+           AND (queue_id = $2 OR (queue_id IS NULL AND $2 IS NULL))
+           AND is_deleted = false 
+           AND status IN ('pending', 'confirmed')
+           AND start_time >= $3 
+           AND start_time <= $4
+         ORDER BY start_time ASC`,
+        [salon.id, assignedQueueId || null, startOfDay.toISOString(), endOfDay.toISOString()]
+      );
+
+      if (busyRes.rows.length === 0) {
+        shouldAskLocation = true;
+      } else {
+        const lastBooking = busyRes.rows[busyRes.rows.length - 1];
+        const lastStart = new Date(lastBooking.start_time);
+        
+        // Calculate earliest slot start without travel buffer
+        let slotStart = assignedStartUtc;
+        const now = new Date();
+        if (slotStart < now) {
+          slotStart = now;
+        }
+        const slotEnd = addMinutes(slotStart, totalDur);
+
+        if (slotEnd < lastStart) {
+          const diffMinutes = (lastStart.getTime() - slotEnd.getTime()) / 60000;
+          if (diffMinutes <= 15) {
+            shouldAskLocation = true;
+          }
+        }
+      }
+    }
+
+    if (shouldAskLocation) {
+      await ensureConversationRow(salon.id, customerPhone, "ASKING_LOCATION", {
+        ...ctx,
+        subserviceIds: selectedSubs,
+        assignedQueueId: assignedQueueId || undefined,
+      });
+      await sendLocationMenu(salon, customerPhone);
+      return;
+    }
+
     const earliestAllowed = addMinutes(new Date(), CUSTOMER_TRAVEL_BUFFER_MINUTES);
     if (assignedStartUtc < earliestAllowed) assignedStartUtc = earliestAllowed;
     const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
@@ -574,5 +638,97 @@ async function handleConfirmingName(salon: SalonRow, customerPhone: string, body
   await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
     toE164: customerPhone,
     body: `🎉 *Booking Confirmed!*\n\n*Services:*\n${svcRes.rows.map((s) => `• ${s.name}`).join("\n")}\n\n*Date/Time:*\n📅 ${format(toZonedTime(new Date(apt.start_time), SALON_TIMEZONE), "EEE dd MMM, hh:mm a")}\n\n👤 ${name}\n\n_Send *hi* to make another booking._`
+  }));
+}
+
+async function sendLocationMenu(salon: SalonRow, customerPhone: string) {
+  await sendAuth(salon, (pid, tok) => sendWhatsAppButtons(pid, tok, {
+    toE164: customerPhone,
+    bodyText: `📍 We noticed the salon queue is currently empty!\n\nAre you already at the salon, or are you booking from home/want to come later?`,
+    buttons: [
+      { id: "loc_salon", title: "📍 At the salon" },
+      { id: "loc_home", title: "🏠 At home / later" }
+    ]
+  }));
+}
+
+async function handleAskingLocation(salon: SalonRow, customerPhone: string, incoming: IncomingParsed, ctx: Ctx) {
+  let choice: "salon" | "home" | null = null;
+  if (incoming.kind === "interactive") {
+    if (incoming.id === "loc_salon") choice = "salon";
+    else if (incoming.id === "loc_home") choice = "home";
+  } else if (incoming.kind === "text") {
+    const t = incoming.body.trim().toLowerCase();
+    if (t.includes("salon") || t.includes("at salon") || t.includes("here")) choice = "salon";
+    else if (t.includes("home") || t.includes("later") || t.includes("house")) choice = "home";
+  }
+  if (!choice) {
+    await sendLocationMenu(salon, customerPhone);
+    return;
+  }
+
+  const selectedSubs = ctx.subserviceIds || [];
+  const svcRes = await db.query("SELECT id, duration_minutes, price, name FROM public.subservices WHERE id = ANY($1::uuid[])", [selectedSubs]);
+  const list = svcRes.rows;
+  const totalDur = list.reduce((a, s) => a + s.duration_minutes, 0);
+  const totalPrice = list.reduce((a, s) => a + Number(s.price), 0);
+
+  let assignedStartUtc: Date;
+  if (choice === "salon") {
+    assignedStartUtc = new Date();
+  } else {
+    // If at home, book after 20 minutes
+    assignedStartUtc = addMinutes(new Date(), 20);
+  }
+
+  // Assign to the best available queue starting from our target start time
+  const queueResult = await assignQueue(salon.id, assignedStartUtc, totalDur);
+  let assignedQueueId = ctx.assignedQueueId;
+  if (queueResult) {
+    assignedStartUtc = queueResult.assignedStartUtc < assignedStartUtc ? assignedStartUtc : queueResult.assignedStartUtc;
+    assignedQueueId = queueResult.queueId;
+  } else {
+    // No queues configured — use salon-level queue
+    const busyRes = await db.query(
+      `SELECT end_time FROM public.appointments WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') AND start_time >= $2 AND start_time < $3 ORDER BY end_time DESC LIMIT 1`,
+      [salon.id, assignedStartUtc.toISOString(), addMinutes(assignedStartUtc, 24*60).toISOString()]
+    );
+    if (busyRes.rows.length > 0) {
+      const busyEnd = parseISO(busyRes.rows[0].end_time);
+      if (busyEnd > assignedStartUtc) {
+        assignedStartUtc = addMinutes(busyEnd, APPOINTMENT_BUFFER_MINUTES);
+      }
+    }
+  }
+
+  const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
+
+  let customerId: string;
+  const custRes = await db.query("SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1", [salon.id, customerPhone]);
+  if (custRes.rows.length > 0) customerId = custRes.rows[0].id;
+  else {
+    const ins = await db.query("INSERT INTO public.customers (salon_id, phone, name) VALUES ($1, $2, $3) RETURNING id", [salon.id, customerPhone, ""]);
+    customerId = ins.rows[0].id;
+  }
+
+  const frozenInsert = await db.query(
+    `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, queue_id) VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
+    [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedQueueId ?? null]
+  );
+  const frozenId = frozenInsert.rows[0].id;
+
+  for (const svc of list) {
+    await db.query(`INSERT INTO public.appointment_services (appointment_id, service_id, price_at_booking, duration_at_booking) VALUES ($1, $2, $3, $4)`, [frozenId, svc.id, Number(svc.price), svc.duration_minutes]);
+  }
+
+  await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
+    ...ctx, subserviceIds: selectedSubs, frozenAppointmentId: frozenId, assignedQueueId,
+  });
+
+  const timeStr = format(toZonedTime(assignedStartUtc, SALON_TIMEZONE), "hh:mm a");
+  const svcSummary = list.map((s) => `• ${s.name}`).join("\n");
+  await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+    toE164: customerPhone,
+    body: `✅ *Slot Reserved!*\n\n*Services:*\n${svcSummary}\n\n*When:* ${timeStr}\n*Total:* ₹${totalPrice.toFixed(2)}\n\n✍️ *Please reply with your full name to complete booking:*`,
   }));
 }

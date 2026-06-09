@@ -43,10 +43,7 @@ export default function LoginPage() {
             <CardContent>
               <AuthForm action={loginAction} submitLabel="Sign in" />
               <p className="mt-4 text-center text-sm text-muted-foreground">
-                New salon?{" "}
-                <Link className="text-primary underline-offset-4 hover:underline" href="/signup">
-                  Create free account
-                </Link>
+                New salon? Please contact the administrator to create an account.
               </p>
             </CardContent>
           </Card>

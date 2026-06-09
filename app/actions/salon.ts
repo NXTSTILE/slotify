@@ -289,6 +289,7 @@ const serviceSchema = z.object({
   is_active: z.coerce.boolean().optional(),
   gender_tag: z.enum(["male", "female", "unisex"]).optional().default("unisex"),
   tier: z.enum(["basic", "medium", "premium"]).optional().nullable(),
+  extra_category: z.string().trim().max(255).optional().nullable(),
 });
 
 export async function addServiceAction(formData: FormData) {
@@ -300,6 +301,7 @@ export async function addServiceAction(formData: FormData) {
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
     gender_tag: formData.get("gender_tag") || "unisex",
     tier: formData.get("tier") || null,
+    extra_category: formData.get("extra_category") as string || null,
   });
   if (!parsed.success) {
     return { error: "Invalid duration or missing fields." };
@@ -314,8 +316,8 @@ export async function addServiceAction(formData: FormData) {
     const count = Number(countRes.rows[0].count);
 
     await db.query(
-      `INSERT INTO public.subservices (salon_id, name, duration_minutes, price, service_id, is_active, display_order, gender_tag, tier) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO public.subservices (salon_id, name, duration_minutes, price, service_id, is_active, display_order, gender_tag, tier, extra_category) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         salon.id,
         parsed.data.name,
@@ -325,7 +327,8 @@ export async function addServiceAction(formData: FormData) {
         parsed.data.is_active ?? true,
         count + 1,
         parsed.data.gender_tag,
-        parsed.data.tier ?? null
+        parsed.data.tier ?? null,
+        parsed.data.extra_category ?? null
       ]
     );
 
@@ -349,6 +352,7 @@ export async function updateServiceAction(formData: FormData) {
     is_active: formData.get("is_active") === "true" || formData.get("is_active") === "on",
     gender_tag: formData.get("gender_tag") || "unisex",
     tier: formData.get("tier") || null,
+    extra_category: formData.get("extra_category") as string || null,
   });
   if (!parsed.success) {
     return { error: "Invalid service fields." };
@@ -357,8 +361,8 @@ export async function updateServiceAction(formData: FormData) {
     const { salon } = await requireSalon();
     await db.query(
       `UPDATE public.subservices 
-       SET name = $1, duration_minutes = $2, price = $3, service_id = $4, is_active = $5, gender_tag = $6, tier = $7 
-       WHERE id = $8 AND salon_id = $9`,
+       SET name = $1, duration_minutes = $2, price = $3, service_id = $4, is_active = $5, gender_tag = $6, tier = $7, extra_category = $8 
+       WHERE id = $9 AND salon_id = $10`,
       [
         parsed.data.name,
         parsed.data.duration_minutes,
@@ -367,6 +371,7 @@ export async function updateServiceAction(formData: FormData) {
         parsed.data.is_active ?? true,
         parsed.data.gender_tag,
         parsed.data.tier ?? null,
+        parsed.data.extra_category ?? null,
         id,
         salon.id
       ]

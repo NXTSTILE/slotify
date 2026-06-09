@@ -21,6 +21,7 @@ type Subservice = {
   is_active: boolean;
   gender_tag: string;
   tier: string | null;
+  extra_category: string | null;
 };
 
 type ServiceGroup = {
@@ -32,9 +33,11 @@ type ServiceGroup = {
 export function ServicesReorder({
   services,
   subservices,
+  showExtraCategory,
 }: {
   services: ServiceGroup[];
   subservices: Subservice[];
+  showExtraCategory: boolean;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -74,7 +77,7 @@ export function ServicesReorder({
                 ) : (
                   <div className="space-y-4">
                     {groupSubservices.map((sub) => (
-                      <SubserviceRow key={sub.id} subservice={sub} services={services} />
+                      <SubserviceRow key={sub.id} subservice={sub} services={services} showExtraCategory={showExtraCategory} />
                     ))}
                   </div>
                 )}
@@ -98,9 +101,11 @@ export function ServicesReorder({
 function SubserviceRow({
   subservice,
   services,
+  showExtraCategory,
 }: {
   subservice: Subservice;
   services: ServiceGroup[];
+  showExtraCategory: boolean;
 }) {
   const [isEditing, setIsEditing] = useState(false);
 
@@ -113,6 +118,11 @@ function SubserviceRow({
             {subservice.tier && (
               <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-semibold text-primary capitalize">
                 {subservice.tier}
+              </span>
+            )}
+            {subservice.extra_category && (
+              <span className="ml-2 rounded-full bg-violet-100 dark:bg-violet-900/30 px-2 py-0.5 text-xs font-semibold text-violet-700 dark:text-violet-300 capitalize">
+                {subservice.extra_category}
               </span>
             )}
           </div>
@@ -204,6 +214,16 @@ function SubserviceRow({
             <option value="premium">Premium</option>
           </select>
         </div>
+        {showExtraCategory && (
+          <div className="space-y-1">
+            <Label className="text-xs">Extra Category</Label>
+            <Input
+              name="extra_category"
+              defaultValue={subservice.extra_category ?? ""}
+              placeholder="e.g. Luxury, Express"
+            />
+          </div>
+        )}
         <div className="flex items-center gap-2 sm:col-span-2">
           <input
             type="checkbox"

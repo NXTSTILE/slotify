@@ -228,6 +228,12 @@ export default async function ServicesPage() {
                 <option value="female">Female</option>
               </select>
             </div>
+            {subservices.length > 12 && (
+              <div className="space-y-2">
+                <Label htmlFor="extra_category">Extra Category</Label>
+                <Input id="extra_category" name="extra_category" placeholder="e.g. Luxury, Express" />
+              </div>
+            )}
             <div className="flex items-end lg:col-span-2">
               <Button type="submit">Save subservice</Button>
             </div>
@@ -248,7 +254,9 @@ export default async function ServicesPage() {
           is_active: s.is_active,
           gender_tag: s.gender_tag,
           tier: s.tier || null,
+          extra_category: s.extra_category || null,
         }))}
+        showExtraCategory={subservices.length > 12}
       />
     </div>
   );

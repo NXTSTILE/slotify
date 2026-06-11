@@ -22,7 +22,7 @@ export default async function SettingsPage() {
 
   // 3. Load working hours list
   const whRes = await db.query(
-    "SELECT day_of_week, open_time, close_time, is_closed FROM public.working_hours WHERE salon_id = $1",
+    "SELECT day_of_week, open_time, close_time, break_start_time, break_end_time, is_closed FROM public.working_hours WHERE salon_id = $1",
     [salon.id]
   );
   const whRows = whRes.rows;

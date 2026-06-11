@@ -132,6 +132,8 @@ export interface Database {
           day_of_week: number;
           open_time: string | null;
           close_time: string | null;
+          break_start_time: string | null;
+          break_end_time: string | null;
           is_closed: boolean;
         };
         Insert: {
@@ -140,6 +142,8 @@ export interface Database {
           day_of_week: number;
           open_time?: string | null;
           close_time?: string | null;
+          break_start_time?: string | null;
+          break_end_time?: string | null;
           is_closed?: boolean;
         };
         Update: {
@@ -148,6 +152,8 @@ export interface Database {
           day_of_week?: number;
           open_time?: string | null;
           close_time?: string | null;
+          break_start_time?: string | null;
+          break_end_time?: string | null;
           is_closed?: boolean;
         };
         Relationships: [];

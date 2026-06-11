@@ -44,6 +44,8 @@ export function SettingsView({
     day_of_week: number;
     open_time: string | null;
     close_time: string | null;
+    break_start_time: string | null;
+    break_end_time: string | null;
     is_closed: boolean;
   }[];
   holidays: { id: string; date: string; reason: string | null }[];
@@ -80,6 +82,8 @@ export function SettingsView({
                 dayOfWeek={day}
                 defaultOpen={timeForInput(row?.open_time ?? null) || "09:00"}
                 defaultClose={timeForInput(row?.close_time ?? null) || "18:00"}
+                defaultBreakStart={timeForInput(row?.break_start_time ?? null) || "13:00"}
+                defaultBreakEnd={timeForInput(row?.break_end_time ?? null) || "13:00"}
                 defaultClosed={row?.is_closed ?? false}
               />
             );
@@ -239,12 +243,16 @@ function WorkingDayRow({
   dayOfWeek,
   defaultOpen,
   defaultClose,
+  defaultBreakStart,
+  defaultBreakEnd,
   defaultClosed,
 }: {
   label: string;
   dayOfWeek: number;
   defaultOpen: string;
   defaultClose: string;
+  defaultBreakStart: string;
+  defaultBreakEnd: string;
   defaultClosed: boolean;
 }) {
   const [state, formAction] = useFormState(upsertWorkingHourFormAction, {} satisfies SettingsFormState);
@@ -257,6 +265,14 @@ function WorkingDayRow({
         <div className="space-y-1">
           <Label className="text-xs">Open</Label>
           <Input name="open_time" type="time" defaultValue={defaultClosed ? "" : defaultOpen} className="w-[7.5rem]" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Break Start</Label>
+          <Input name="break_start_time" type="time" defaultValue={defaultClosed ? "" : defaultBreakStart} className="w-[7.5rem]" />
+        </div>
+        <div className="space-y-1">
+          <Label className="text-xs">Break End</Label>
+          <Input name="break_end_time" type="time" defaultValue={defaultClosed ? "" : defaultBreakEnd} className="w-[7.5rem]" />
         </div>
         <div className="space-y-1">
           <Label className="text-xs">Close</Label>

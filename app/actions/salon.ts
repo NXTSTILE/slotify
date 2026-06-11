@@ -115,6 +115,8 @@ const hoursSchema = z.object({
   day_of_week: z.coerce.number().min(0).max(6),
   open_time: z.string().optional(),
   close_time: z.string().optional(),
+  break_start_time: z.string().optional().nullable(),
+  break_end_time: z.string().optional().nullable(),
   is_closed: z.coerce.boolean(),
 });
 
@@ -123,6 +125,8 @@ export async function upsertWorkingHourAction(formData: FormData) {
     day_of_week: formData.get("day_of_week"),
     open_time: formData.get("open_time") || undefined,
     close_time: formData.get("close_time") || undefined,
+    break_start_time: formData.get("break_start_time") || null,
+    break_end_time: formData.get("break_end_time") || null,
     is_closed: formData.get("is_closed") === "on" || formData.get("is_closed") === "true",
   });
   if (!parsed.success) {
@@ -130,18 +134,20 @@ export async function upsertWorkingHourAction(formData: FormData) {
   }
   try {
     const { salon } = await requireSalon();
-    const { day_of_week, open_time, close_time, is_closed } = parsed.data;
+    const { day_of_week, open_time, close_time, break_start_time, break_end_time, is_closed } = parsed.data;
 
     await db.query(
-      `INSERT INTO public.working_hours (salon_id, day_of_week, open_time, close_time, is_closed) 
-       VALUES ($1, $2, $3, $4, $5) 
+      `INSERT INTO public.working_hours (salon_id, day_of_week, open_time, close_time, break_start_time, break_end_time, is_closed) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
        ON CONFLICT (salon_id, day_of_week) 
-       DO UPDATE SET open_time = $3, close_time = $4, is_closed = $5`,
+       DO UPDATE SET open_time = $3, close_time = $4, break_start_time = $5, break_end_time = $6, is_closed = $7`,
       [
         salon.id,
         day_of_week,
         is_closed ? null : open_time ?? null,
         is_closed ? null : close_time ?? null,
+        is_closed ? null : break_start_time || null,
+        is_closed ? null : break_end_time || null,
         is_closed
       ]
     );

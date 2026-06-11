@@ -24,21 +24,28 @@ export type WindowResult =
  * Checks if a specific queue (or the salon overall) has a contiguous time slot of length
  * totalDurationMinutes + buffer within a session window.
  */
-async function hasAvailableSlot(
+/**
+ * Finds the earliest available slot starting within [sessionStart, sessionEnd),
+ * allowing it to extend up to searchEnd (closeUtc for morning sessions, sessionEnd for evening).
+ */
+export async function findEarliestSlotStart(
   salonId: string,
   queueId: string | null,
   sessionStart: Date,
   sessionEnd: Date,
-  totalDurationMinutes: number
-): Promise<boolean> {
+  totalDurationMinutes: number,
+  isMorning: boolean,
+  closeUtc: Date
+): Promise<Date | null> {
   const requiredDurMs = (totalDurationMinutes + APPOINTMENT_BUFFER_MINUTES) * 60000;
+  const searchEnd = isMorning ? closeUtc : sessionEnd;
 
   let queryText = `
     SELECT start_time, end_time FROM public.appointments 
     WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed')
       AND end_time > $2 AND start_time < $3
   `;
-  const params: any[] = [salonId, sessionStart.toISOString(), sessionEnd.toISOString()];
+  const params: any[] = [salonId, sessionStart.toISOString(), searchEnd.toISOString()];
 
   if (queueId) {
     queryText += ` AND queue_id = $4`;
@@ -55,20 +62,57 @@ async function hasAvailableSlot(
     const aptStart = new Date(row.start_time);
     const aptEnd = new Date(row.end_time);
 
-    // Does the gap between availableAt and this appointment's start fit our booking?
-    if (aptStart.getTime() - availableAt.getTime() >= requiredDurMs) {
-      return true; // Found a slot!
+    // If our search pointer has advanced past the session boundary, no slot can start within it anymore.
+    if (availableAt >= sessionEnd) {
+      return null;
     }
 
-    // Update availableAt to be after this appointment
+    // Check if the gap before this appointment is large enough.
+    if (aptStart.getTime() - availableAt.getTime() >= requiredDurMs) {
+      return availableAt;
+    }
+
+    // Advance availableAt to be after the current appointment + buffer.
     const possibleNextStart = addMinutes(aptEnd, APPOINTMENT_BUFFER_MINUTES);
     if (possibleNextStart > availableAt) {
       availableAt = possibleNextStart;
     }
   }
 
-  // Check after the last appointment
-  return (availableAt.getTime() + requiredDurMs) <= sessionEnd.getTime();
+  // After the last appointment: check if the slot still starts before sessionEnd and fits before searchEnd.
+  if (availableAt >= sessionEnd) {
+    return null;
+  }
+  if ((availableAt.getTime() + requiredDurMs) <= searchEnd.getTime()) {
+    return availableAt;
+  }
+
+  return null;
+}
+
+/**
+ * Checks if a specific queue (or the salon overall) has a contiguous time slot of length
+ * totalDurationMinutes + buffer within a session window.
+ */
+async function hasAvailableSlot(
+  salonId: string,
+  queueId: string | null,
+  sessionStart: Date,
+  sessionEnd: Date,
+  totalDurationMinutes: number,
+  isMorning: boolean,
+  closeUtc: Date
+): Promise<boolean> {
+  const slotStart = await findEarliestSlotStart(
+    salonId,
+    queueId,
+    sessionStart,
+    sessionEnd,
+    totalDurationMinutes,
+    isMorning,
+    closeUtc
+  );
+  return slotStart !== null;
 }
 
 /** 
@@ -106,7 +150,7 @@ export async function getAvailableWindows(
   const dayOfWeek = zonedDay.getDay();
   
   const whRes = await db.query(
-    "SELECT open_time, close_time, is_closed FROM public.working_hours WHERE salon_id = $1 AND day_of_week = $2 LIMIT 1",
+    "SELECT open_time, close_time, break_start_time, break_end_time, is_closed FROM public.working_hours WHERE salon_id = $1 AND day_of_week = $2 LIMIT 1",
     [salonId, dayOfWeek]
   );
   const wh = whRes.rows[0];
@@ -116,9 +160,12 @@ export async function getAvailableWindows(
   const openUtc = combineKolkataDateAndTime(dayStartUtc, wh.open_time);
   const closeUtc = combineKolkataDateAndTime(dayStartUtc, wh.close_time);
 
-  // 3. Define Windows (Morning vs Evening)
-  // Split point is 1:00 PM (13:00) Kolkata time
-  const splitTimeUtc = combineKolkataDateAndTime(dayStartUtc, "13:00:00");
+  // 3. Define Windows (Morning vs Evening) using break configuration
+  const breakStartStr = wh.break_start_time || "13:00:00";
+  const breakEndStr = wh.break_end_time || "13:00:00";
+
+  const morningEndUtc = combineKolkataDateAndTime(dayStartUtc, breakStartStr);
+  const eveningStartUtc = combineKolkataDateAndTime(dayStartUtc, breakEndStr);
   
   // For same-day bookings, constrain session start to current time
   const effectiveNow = bypassLeadTime ? now : now;
@@ -128,12 +175,12 @@ export async function getAvailableWindows(
       name: "Morning", 
       start: maxDate(openUtc, effectiveNow),
       rawStart: openUtc,
-      end: splitTimeUtc 
+      end: morningEndUtc 
     },
     { 
       name: "Evening", 
-      start: maxDate(splitTimeUtc, effectiveNow),
-      rawStart: splitTimeUtc,
+      start: maxDate(eveningStartUtc, effectiveNow),
+      rawStart: eveningStartUtc,
       end: closeUtc 
     }
   ];
@@ -151,18 +198,19 @@ export async function getAvailableWindows(
   const windowResults = await Promise.all(
     validSessions.map(async (session) => {
       let isAvailable = false;
+      const isMorning = session.name === "Morning";
 
       if (activeQueues.length > 0) {
         // Check if ANY active queue has an available slot
         for (const queue of activeQueues) {
-          if (await hasAvailableSlot(salonId, queue.id, session.start, session.end, totalDurationMinutes)) {
+          if (await hasAvailableSlot(salonId, queue.id, session.start, session.end, totalDurationMinutes, isMorning, closeUtc)) {
             isAvailable = true;
             break;
           }
         }
       } else {
         // No queues configured — check salon-wide single timeline
-        isAvailable = await hasAvailableSlot(salonId, null, session.start, session.end, totalDurationMinutes);
+        isAvailable = await hasAvailableSlot(salonId, null, session.start, session.end, totalDurationMinutes, isMorning, closeUtc);
       }
 
       return {
@@ -185,7 +233,7 @@ function maxDate(a: Date, b: Date): Date {
 }
 
 /** Utility to merge a Date and a HH:mm:ss string into a Kolkata-zoned Date */
-function combineKolkataDateAndTime(dayUtc: Date, timeStr: string): Date {
+export function combineKolkataDateAndTime(dayUtc: Date, timeStr: string): Date {
   const [h, m, s] = timeStr.split(":").map(Number);
   const local = toZonedTime(dayUtc, SALON_TIMEZONE);
   const iso = `${format(local, "yyyy-MM-dd")}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s ?? 0).padStart(2, "0")}+05:30`;

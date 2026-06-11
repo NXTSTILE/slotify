@@ -1,4 +1,4 @@
-import { addMinutes, format, parseISO } from "date-fns";
+import { addMinutes, format, parseISO, startOfDay } from "date-fns";
 import { toZonedTime } from "date-fns-tz";
 import { z } from "zod";
 import {
@@ -11,6 +11,8 @@ import { db } from "@/lib/db";
 import {
   getAvailableWindows,
   parseDdMmYyyyKolkata,
+  findEarliestSlotStart,
+  combineKolkataDateAndTime,
 } from "@/lib/booking/slots";
 import { assignQueue } from "@/lib/booking/queueAssignment";
 import {
@@ -242,6 +244,30 @@ async function sendGenderMenu(salon: SalonRow, customerPhone: string) {
 }
 
 async function sendDateSessionList(salon: SalonRow, customerPhone: string) {
+  const today = resolveDate("today");
+  const tomorrow = resolveDate("tomorrow");
+
+  const todayWindows = await getAvailableWindows(salon.id, today, 15, true);
+  const tomorrowWindows = await getAvailableWindows(salon.id, tomorrow, 15, true);
+
+  let todayMorningRange = "Morning";
+  let todayEveningRange = "Evening";
+  let tomorrowMorningRange = "Morning";
+  let tomorrowEveningRange = "Evening";
+
+  if (todayWindows.ok) {
+    const m = todayWindows.windows.find(w => w.name === "Morning");
+    const e = todayWindows.windows.find(w => w.name === "Evening");
+    if (m) todayMorningRange = `Morning (${m.range})`;
+    if (e) todayEveningRange = `Evening (${e.range})`;
+  }
+  if (tomorrowWindows.ok) {
+    const m = tomorrowWindows.windows.find(w => w.name === "Morning");
+    const e = tomorrowWindows.windows.find(w => w.name === "Evening");
+    if (m) tomorrowMorningRange = `Morning (${m.range})`;
+    if (e) tomorrowEveningRange = `Evening (${e.range})`;
+  }
+
   await sendAuth(salon, (pid, tok) => sendWhatsAppList(pid, tok, {
     toE164: customerPhone,
     bodyText: "📅 When would you like to schedule your visit?",
@@ -250,15 +276,15 @@ async function sendDateSessionList(salon: SalonRow, customerPhone: string) {
       {
         title: "Today",
         rows: [
-          { id: "ds_today_morning", title: "Morning (9am - 1pm)" },
-          { id: "ds_today_evening", title: "Evening (1pm - 9pm)" }
+          { id: "ds_today_morning", title: todayMorningRange },
+          { id: "ds_today_evening", title: todayEveningRange }
         ]
       },
       {
         title: "Tomorrow",
         rows: [
-          { id: "ds_tomorrow_morning", title: "Morning (9am - 1pm)" },
-          { id: "ds_tomorrow_evening", title: "Evening (1pm - 9pm)" }
+          { id: "ds_tomorrow_morning", title: tomorrowMorningRange },
+          { id: "ds_tomorrow_evening", title: tomorrowEveningRange }
         ]
       }
     ]
@@ -490,21 +516,70 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
     }
 
     // Assign to the best available queue (earliest gap)
-    const queueResult = await assignQueue(salon.id, selectedWindow.startUtc, totalDur);
-    let assignedStartUtc: Date;
+    let assignedStartUtc: Date | null = null;
     let assignedQueueId: string | undefined;
 
-    if (queueResult) {
-      assignedStartUtc = queueResult.assignedStartUtc;
-      assignedQueueId = queueResult.queueId;
+    // Load active queues
+    const queueRes = await db.query<{ id: string; name: string }>(
+      "SELECT id, name FROM public.queues WHERE salon_id = $1 AND is_active = true ORDER BY name ASC",
+      [salon.id]
+    );
+    const activeQueues = queueRes.rows;
+
+    const isMorning = ctx.selectedSession === "morning";
+    const zonedDay = toZonedTime(day, SALON_TIMEZONE);
+    const dayOfWeek = zonedDay.getDay();
+    const whRes = await db.query(
+      "SELECT close_time, break_end_time FROM public.working_hours WHERE salon_id = $1 AND day_of_week = $2 LIMIT 1",
+      [salon.id, dayOfWeek]
+    );
+    const wh = whRes.rows[0];
+    const closeTimeStr = wh?.close_time || "21:00:00";
+    
+    // Combine date and time to get closeUtc
+    const dayStartLocal = startOfDay(zonedDay);
+    const dayStartUtc = parseISO(`${format(dayStartLocal, "yyyy-MM-dd")}T00:00:00+05:30`);
+    const closeUtc = combineKolkataDateAndTime(dayStartUtc, closeTimeStr);
+
+    if (activeQueues.length > 0) {
+      let bestQueueId: string | null = null;
+      let earliestStart: Date = new Date(8640000000000000); // sentinel
+
+      for (const queue of activeQueues) {
+        const qStart = await findEarliestSlotStart(
+          salon.id,
+          queue.id,
+          selectedWindow.startUtc,
+          selectedWindow.endUtc,
+          totalDur,
+          isMorning,
+          closeUtc
+        );
+        if (qStart && qStart < earliestStart) {
+          earliestStart = qStart;
+          bestQueueId = queue.id;
+        }
+      }
+
+      if (bestQueueId) {
+        assignedStartUtc = earliestStart;
+        assignedQueueId = bestQueueId;
+      }
     } else {
-      // No queues configured — use salon-level queue
-      const busyRes = await db.query(
-        `SELECT end_time FROM public.appointments WHERE salon_id = $1 AND is_deleted = false AND status IN ('pending', 'confirmed') AND start_time >= $2 AND start_time < $3 ORDER BY end_time DESC LIMIT 1`,
-        [salon.id, selectedWindow.startUtc.toISOString(), selectedWindow.endUtc.toISOString()]
+      // No queues configured - single timeline
+      assignedStartUtc = await findEarliestSlotStart(
+        salon.id,
+        null,
+        selectedWindow.startUtc,
+        selectedWindow.endUtc,
+        totalDur,
+        isMorning,
+        closeUtc
       );
+    }
+
+    if (!assignedStartUtc) {
       assignedStartUtc = selectedWindow.startUtc;
-      if (busyRes.rows.length > 0) assignedStartUtc = addMinutes(parseISO(busyRes.rows[0].end_time), APPOINTMENT_BUFFER_MINUTES);
     }
 
     // Check if booking is for today in the salon timezone

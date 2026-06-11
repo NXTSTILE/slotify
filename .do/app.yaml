@@ -30,6 +30,9 @@ services:
       - key: CRON_SECRET
         scope: RUN_TIME
         type: SECRET
+      - key: APP_URL
+        scope: RUN_TIME
+        type: SECRET
 jobs:
   - name: reminders-cron
     kind: SCHEDULED
@@ -42,5 +45,8 @@ jobs:
     run_command: curl -s -X GET -H "Authorization: Bearer $${CRON_SECRET}" $${APP_URL}/api/cron/reminders
     envs:
       - key: CRON_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: APP_URL
         scope: RUN_TIME
         type: SECRET

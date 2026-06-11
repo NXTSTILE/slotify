@@ -658,7 +658,7 @@ export async function addWalkInBookingAction(formData: FormData) {
       // No queue configured — fall back to salon-level queue
       const lastAptRes = await client.query(
         `SELECT end_time FROM public.appointments 
-         WHERE salon_id = $1 AND status IN ('pending', 'confirmed')
+         WHERE salon_id = $1 AND status = 'confirmed'
          AND end_time > NOW()
          ORDER BY end_time DESC LIMIT 1`,
         [salon.id]

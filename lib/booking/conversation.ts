@@ -30,6 +30,7 @@ const CtxSchema = z.object({
   subserviceIds: z.array(z.string().uuid()).optional(),
   confirmedAppointmentId: z.string().uuid().optional(),
   assignedQueueId: z.string().uuid().optional(),
+  assignedSlotIso: z.string().optional(), // stored queue-end anchor for location flow
 });
 
 type Ctx = z.infer<typeof CtxSchema>;
@@ -562,7 +563,11 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
       assignedStartUtc = selectedWindow.startUtc;
     }
 
-    // Check if booking is for today in the salon timezone — ask location only if queue is empty
+    // ── Location question logic ──────────────────────────────────────────
+    // Ask only for TODAY bookings. Trigger when:
+    //   a) Queue is empty for this day (slot = now, customer might be far away)
+    //   b) Assigned slot starts within 20 min from now (tight — need to know if at salon)
+    // If slot is > 20 min away, customer definitely has time to travel — book directly.
     const zonedNow = toZonedTime(new Date(), SALON_TIMEZONE);
     const todayStr = format(zonedNow, "yyyy-MM-dd");
     const selectedDayStr = format(toZonedTime(day, SALON_TIMEZONE), "yyyy-MM-dd");
@@ -570,26 +575,10 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
 
     let shouldAskLocation = false;
     if (isToday) {
-      const dayStartBound = startOfDay(toZonedTime(day, SALON_TIMEZONE));
-      const dayStartUtcBound = parseISO(`${format(dayStartBound, "yyyy-MM-dd")}T00:00:00+05:30`);
-      const dayEndUtcBound = addMinutes(dayStartUtcBound, 24 * 60);
-
-      const busyRes = await db.query(
-        `SELECT COUNT(*) as cnt
-         FROM public.appointments 
-         WHERE salon_id = $1 
-           AND (queue_id = $2 OR (queue_id IS NULL AND $2 IS NULL))
-           AND is_deleted = false 
-           AND status = 'confirmed'
-           AND start_time >= $3 
-           AND start_time < $4`,
-        [salon.id, assignedQueueId || null, dayStartUtcBound.toISOString(), dayEndUtcBound.toISOString()]
-      );
-
-      // Only ask if the queue is completely empty for the day
-      if (Number(busyRes.rows[0]?.cnt ?? 0) === 0) {
-        shouldAskLocation = true;
-      }
+      const now = new Date();
+      const minutesUntilSlot = (assignedStartUtc.getTime() - now.getTime()) / 60000;
+      // Ask if slot is starting soon (≤20 min away) OR queue is empty (slot = window start)
+      shouldAskLocation = minutesUntilSlot <= 20;
     }
 
     if (shouldAskLocation) {
@@ -597,6 +586,7 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
         ...ctx,
         subserviceIds: selectedSubs,
         assignedQueueId: assignedQueueId || undefined,
+        assignedSlotIso: assignedStartUtc.toISOString(), // anchor: earliest queue end
       });
       await sendLocationMenu(salon, customerPhone);
       return;
@@ -738,33 +728,21 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
   const totalDur = list.reduce((a, s) => a + s.duration_minutes, 0);
   const totalPrice = list.reduce((a, s) => a + Number(s.price), 0);
 
-  // Determine start time based on customer's physical location
+  // The queue's earliest available slot was pre-computed before asking the location question.
+  // Use it as the anchor for both choices.
+  const queueSlot = ctx.assignedSlotIso ? new Date(ctx.assignedSlotIso) : new Date();
+  const now = new Date();
+
   let assignedStartUtc: Date;
   if (choice === "salon") {
-    assignedStartUtc = new Date(); // they are already there
+    // Customer is physically at the salon — no travel buffer needed.
+    // Place them right at the queue's next slot (or now if queue was empty).
+    assignedStartUtc = queueSlot < now ? now : queueSlot;
   } else {
-    assignedStartUtc = addMinutes(new Date(), 20); // 20-min travel buffer
-  }
-
-  // Assign to best available queue from the target start time
-  const queueResult = await assignQueue(salon.id, assignedStartUtc, totalDur);
-  let assignedQueueId = ctx.assignedQueueId;
-  if (queueResult) {
-    // Use queue's earliest available slot, but not before the customer's target time
-    assignedStartUtc = queueResult.assignedStartUtc < assignedStartUtc ? assignedStartUtc : queueResult.assignedStartUtc;
-    assignedQueueId = queueResult.queueId;
-  } else {
-    // No queues configured — use salon-level single timeline
-    const busyRes = await db.query(
-      `SELECT end_time FROM public.appointments WHERE salon_id = $1 AND is_deleted = false AND status = 'confirmed' AND start_time >= $2 AND start_time < $3 ORDER BY end_time DESC LIMIT 1`,
-      [salon.id, assignedStartUtc.toISOString(), addMinutes(assignedStartUtc, 24 * 60).toISOString()]
-    );
-    if (busyRes.rows.length > 0) {
-      const busyEnd = parseISO(busyRes.rows[0].end_time);
-      if (busyEnd > assignedStartUtc) {
-        assignedStartUtc = addMinutes(busyEnd, APPOINTMENT_BUFFER_MINUTES);
-      }
-    }
+    // Customer is at home — needs 20 min to travel.
+    // Start must be at least now+20 AND at least the queue's next slot.
+    const travelReady = addMinutes(now, 20);
+    assignedStartUtc = queueSlot > travelReady ? queueSlot : travelReady;
   }
 
   const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
@@ -786,7 +764,7 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
     const aptInsert = await client.query(
       `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, queue_id)
        VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false, $7) RETURNING id`,
-      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedQueueId ?? null]
+      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, ctx.assignedQueueId ?? null]
     );
     const appointmentId = aptInsert.rows[0].id;
 
@@ -801,7 +779,7 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
     client.release();
 
     await ensureConversationRow(salon.id, customerPhone, "CONFIRMING_NAME", {
-      ...ctx, subserviceIds: selectedSubs, confirmedAppointmentId: appointmentId, assignedQueueId,
+      ...ctx, subserviceIds: selectedSubs, confirmedAppointmentId: appointmentId,
     });
 
     const timeStr = format(toZonedTime(assignedStartUtc, SALON_TIMEZONE), "hh:mm a");

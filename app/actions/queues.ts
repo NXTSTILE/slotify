@@ -116,7 +116,8 @@ export async function cancelAppointmentAction(formData: FormData) {
     
     // Fetch last message time from conversation state or fallback to appointment created_at
     const lastMsgRes = await db.query(
-      `SELECT cs.updated_at as last_customer_message_at, a.created_at
+      `SELECT cs.updated_at as last_customer_message_at, a.created_at,
+              a.start_time, a.end_time, a.queue_id, a.total_duration_minutes
        FROM public.appointments a
        JOIN public.customers c ON c.id = a.customer_id
        LEFT JOIN public.conversation_states cs ON cs.customer_phone = c.phone AND cs.salon_id = a.salon_id
@@ -131,6 +132,11 @@ export async function cancelAppointmentAction(formData: FormData) {
       return { error: "Rescheduling and cancellation can only be done within 24 hours after the customer's last message." };
     }
 
+    const cancelledStart = new Date(dateRow.start_time);
+    const cancelledEnd   = new Date(dateRow.end_time);
+    const cancelledQueueId = dateRow.queue_id as string | null;
+    const BUFFER_MS = 2 * 60 * 1000; // 2-minute buffer between appointments
+
     const client = await db.pool.connect();
     try {
       await client.query("BEGIN");
@@ -142,6 +148,61 @@ export async function cancelAppointmentAction(formData: FormData) {
         "INSERT INTO public.notifications (salon_id, type, appointment_id, is_read, whatsapp_sent) VALUES ($1, 'cancellation', $2, false, false)",
         [salon.id, id]
       );
+
+      // ── Slot reclaim: cascade-shift later appointments earlier ──────────
+      // Find all confirmed appointments in the same queue that start AFTER
+      // the cancelled slot, on the same calendar day. Shift them forward
+      // (earlier) to fill the freed gap, respecting "now" as the floor.
+      const dayStart = new Date(cancelledStart);
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setUTCHours(23, 59, 59, 999);
+
+      const laterRes = await client.query(
+        `SELECT id, start_time, end_time, total_duration_minutes
+         FROM public.appointments
+         WHERE salon_id = $1
+           AND (
+             (queue_id = $2 AND $2 IS NOT NULL)
+             OR (queue_id IS NULL AND $2 IS NULL)
+           )
+           AND is_deleted = false
+           AND status = 'confirmed'
+           AND start_time > $3
+           AND start_time <= $4
+         ORDER BY start_time ASC`,
+        [salon.id, cancelledQueueId, cancelledStart.toISOString(), dayEnd.toISOString()]
+      );
+
+      if (laterRes.rows.length > 0) {
+        const now = new Date();
+        // The gap opens at the cancelled appointment's start time.
+        // Each subsequent appointment can fill it.
+        let gapStart = cancelledStart;
+
+        for (const row of laterRes.rows) {
+          const aptStart = new Date(row.start_time);
+          const aptEnd   = new Date(row.end_time);
+          const durMs    = aptEnd.getTime() - aptStart.getTime();
+
+          // New start is max(gapStart, now) so we don't schedule in the past
+          const newStart = new Date(Math.max(gapStart.getTime(), now.getTime()));
+          const newEnd   = new Date(newStart.getTime() + durMs);
+
+          // Only shift if the new slot is actually earlier than the current one
+          if (newStart < aptStart) {
+            await client.query(
+              "UPDATE public.appointments SET start_time = $1, end_time = $2 WHERE id = $3",
+              [newStart.toISOString(), newEnd.toISOString(), row.id]
+            );
+          }
+
+          // Next appointment can start right after this one ends (+ buffer)
+          gapStart = new Date(newEnd.getTime() + BUFFER_MS);
+        }
+      }
+      // ────────────────────────────────────────────────────────────────────
+
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK");

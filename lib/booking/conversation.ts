@@ -198,8 +198,11 @@ export async function handleConversationMessage(salonId: string, customerPhoneRa
     case "SELECTING_GENDER":
       await handleSelectingGender(salon, customerPhone, incoming, ctx);
       break;
-    case "SELECTING_DATE_SESSION":
-      await handleSelectingDateSession(salon, customerPhone, incoming, ctx);
+    case "SELECTING_DATE":
+      await handleSelectingDate(salon, customerPhone, incoming, ctx);
+      break;
+    case "SELECTING_SESSION":
+      await handleSelectingSession(salon, customerPhone, incoming, ctx);
       break;
     case "SELECTING_SERVICE_GROUPS":
       await handleSelectingServiceGroups(salon, customerPhone, userText, ctx);
@@ -226,53 +229,8 @@ async function sendGenderMenu(salon: SalonRow, customerPhone: string) {
   }));
 }
 
-async function sendDateSessionList(salon: SalonRow, customerPhone: string) {
-  const today = resolveDate("today");
-  const tomorrow = resolveDate("tomorrow");
-
-  const todayWindows = await getAvailableWindows(salon.id, today, 15, true);
-  const tomorrowWindows = await getAvailableWindows(salon.id, tomorrow, 15, true);
-
-  let todayMorningRange = "Morning";
-  let todayEveningRange = "Evening";
-  let tomorrowMorningRange = "Morning";
-  let tomorrowEveningRange = "Evening";
-
-  if (todayWindows.ok) {
-    const m = todayWindows.windows.find(w => w.name === "Morning");
-    const e = todayWindows.windows.find(w => w.name === "Evening");
-    if (m) todayMorningRange = `Morning (${m.range})`;
-    if (e) todayEveningRange = `Evening (${e.range})`;
-  }
-  if (tomorrowWindows.ok) {
-    const m = tomorrowWindows.windows.find(w => w.name === "Morning");
-    const e = tomorrowWindows.windows.find(w => w.name === "Evening");
-    if (m) tomorrowMorningRange = `Morning (${m.range})`;
-    if (e) tomorrowEveningRange = `Evening (${e.range})`;
-  }
-
-  await sendAuth(salon, (pid, tok) => sendWhatsAppList(pid, tok, {
-    toE164: customerPhone,
-    bodyText: "📅 When would you like to schedule your visit?",
-    buttonText: "Select Time",
-    sections: [
-      {
-        title: "Today",
-        rows: [
-          { id: "ds_today_morning", title: todayMorningRange },
-          { id: "ds_today_evening", title: todayEveningRange }
-        ]
-      },
-      {
-        title: "Tomorrow",
-        rows: [
-          { id: "ds_tomorrow_morning", title: tomorrowMorningRange },
-          { id: "ds_tomorrow_evening", title: tomorrowEveningRange }
-        ]
-      }
-    ]
-  }));
-}
+// sendDateList, sendSessionList, handleSelectingDate, handleSelectingSession
+// are defined below, after resolveDate is replaced by resolveDayOffset.
 
 async function sendServiceCatalog(salon: SalonRow, to: string, gender?: "male" | "female") {
   await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: to, body: `Please use the booking flow by sending *hi* to view our specific services and prices.` }));
@@ -296,46 +254,116 @@ async function handleSelectingGender(salon: SalonRow, customerPhone: string, inc
     await sendGenderMenu(salon, customerPhone);
     return;
   }
-  await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE_SESSION", { gender });
-  await sendDateSessionList(salon, customerPhone);
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", { gender });
+  await sendDateList(salon, customerPhone);
 }
 
-function resolveDate(t: string): Date {
+/** Returns midnight (IST) for today + `offset` days (0 = today, 1 = tomorrow, …). */
+function resolveDayOffset(offset: number): Date {
   const z = toZonedTime(new Date(), SALON_TIMEZONE);
   const iso = `${format(z, "yyyy-MM-dd")}T00:00:00+05:30`;
-  const day = parseISO(iso);
-  if (t === "tomorrow") return addMinutes(day, 24 * 60);
-  return day;
+  return addMinutes(parseISO(iso), offset * 24 * 60);
 }
 
-async function handleSelectingDateSession(salon: SalonRow, customerPhone: string, incoming: IncomingParsed, ctx: Ctx) {
-  if (incoming.kind !== "interactive" || !incoming.id.startsWith("ds_")) {
-    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: "Please tap the 'Select Time' button to choose." }));
+/** Step 1 of 2: show the next 7 days as a selectable list. */
+async function sendDateList(salon: SalonRow, customerPhone: string) {
+  const rows: { id: string; title: string }[] = [];
+  for (let i = 0; i < 7; i++) {
+    const day = resolveDayOffset(i);
+    const label =
+      i === 0 ? `Today — ${format(toZonedTime(day, SALON_TIMEZONE), "EEE, d MMM")}` :
+      i === 1 ? `Tomorrow — ${format(toZonedTime(day, SALON_TIMEZONE), "EEE, d MMM")}` :
+                format(toZonedTime(day, SALON_TIMEZONE), "EEE, d MMM");
+    rows.push({ id: `d_${i}`, title: label });
+  }
+  await sendAuth(salon, (pid, tok) => sendWhatsAppList(pid, tok, {
+    toE164: customerPhone,
+    bodyText: "📅 *When would you like to visit?*\n\nChoose a date from the next 7 days:",
+    buttonText: "Select Date",
+    sections: [{ title: "Available Days", rows }],
+  }));
+}
+
+/** Step 2 of 2: show Morning / Evening sessions for the already-chosen day. */
+async function sendSessionList(salon: SalonRow, customerPhone: string, day: Date) {
+  const windowRes = await getAvailableWindows(salon.id, day, 15, true);
+  let morningLabel = "Morning Session";
+  let eveningLabel = "Evening Session";
+  if (windowRes.ok) {
+    const m = windowRes.windows.find(w => w.name === "Morning");
+    const e = windowRes.windows.find(w => w.name === "Evening");
+    if (m) morningLabel = `Morning (${m.range})`;
+    if (e) eveningLabel = `Evening (${e.range})`;
+  }
+  const dayLabel = format(toZonedTime(day, SALON_TIMEZONE), "EEE, d MMM");
+  await sendAuth(salon, (pid, tok) => sendWhatsAppList(pid, tok, {
+    toE164: customerPhone,
+    bodyText: `🕐 *Which session on ${dayLabel}?*`,
+    buttonText: "Select Session",
+    sections: [{
+      title: "Available Sessions",
+      rows: [
+        { id: "s_morning", title: morningLabel },
+        { id: "s_evening", title: eveningLabel },
+      ],
+    }],
+  }));
+}
+
+/** Handles the customer tapping a day from the date list. */
+async function handleSelectingDate(salon: SalonRow, customerPhone: string, incoming: IncomingParsed, ctx: Ctx) {
+  const offset = incoming.kind === "interactive" ? parseInt(incoming.id.replace("d_", ""), 10) : NaN;
+  if (incoming.kind !== "interactive" || isNaN(offset) || offset < 0 || offset > 6 || !incoming.id.startsWith("d_")) {
+    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+      toE164: customerPhone,
+      body: "Please tap the *Select Date* button to choose a day.",
+    }));
     return;
   }
-  const parts = incoming.id.replace("ds_", "").split("_");
-  const dayText = parts[0]; // "today" | "tomorrow"
-  const sessionChoice = parts[1]; // "morning" | "evening"
+  const day = resolveDayOffset(offset);
+  await ensureConversationRow(salon.id, customerPhone, "SELECTING_SESSION", {
+    ...ctx,
+    selectedDayIso: day.toISOString(),
+  });
+  await sendSessionList(salon, customerPhone, day);
+}
 
-  const day = resolveDate(dayText);
+/** Handles the customer tapping Morning or Evening. */
+async function handleSelectingSession(salon: SalonRow, customerPhone: string, incoming: IncomingParsed, ctx: Ctx) {
+  if (incoming.kind !== "interactive" || (incoming.id !== "s_morning" && incoming.id !== "s_evening")) {
+    // Re-show session list for the already-chosen day
+    const day = ctx.selectedDayIso ? parseISO(ctx.selectedDayIso) : resolveDayOffset(0);
+    await sendSessionList(salon, customerPhone, day);
+    return;
+  }
+
+  const sessionChoice = incoming.id === "s_morning" ? "morning" : "evening";
+  const day = parseISO(ctx.selectedDayIso!);
+
   const windowRes = await getAvailableWindows(salon.id, day, 15, true);
-
   if (!windowRes.ok) {
-    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `⚠️ ${windowRes.reason}` }));
-    await sendDateSessionList(salon, customerPhone);
+    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+      toE164: customerPhone,
+      body: `⚠️ ${windowRes.reason}`,
+    }));
+    // Day is unavailable — go back to date picker
+    await ensureConversationRow(salon.id, customerPhone, "SELECTING_DATE", { gender: ctx.gender });
+    await sendDateList(salon, customerPhone);
     return;
   }
 
   const w = windowRes.windows.find(x => x.name.toLowerCase() === sessionChoice);
   if (!w || w.status !== "AVAILABLE") {
-    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, { toE164: customerPhone, body: `⚠️ The ${sessionChoice} session on ${dayText} is fully booked or closed. Please select another.` }));
-    await sendDateSessionList(salon, customerPhone);
+    await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+      toE164: customerPhone,
+      body: `⚠️ The ${sessionChoice} session is fully booked or closed. Please pick another session.`,
+    }));
+    await sendSessionList(salon, customerPhone, day);
     return;
   }
 
   await ensureConversationRow(salon.id, customerPhone, "SELECTING_SERVICE_GROUPS", {
     ...ctx,
-    selectedDayIso: day.toISOString(),
     selectedSession: sessionChoice,
   });
 

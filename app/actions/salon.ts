@@ -5,7 +5,7 @@ import { z } from "zod";
 import { addMinutes } from "date-fns";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { assignQueue } from "@/lib/booking/queueAssignment";
+import { APPOINTMENT_BUFFER_MINUTES } from "@/lib/constants";
 
 /**
  * Secures dashboard actions by verifying user session and fetching their active salon.
@@ -624,6 +624,10 @@ export async function addWalkInBookingAction(formData: FormData) {
     const dbServices = svcRes.rows;
 
     if (!dbServices || dbServices.length === 0) {
+      // BUG-07 FIX: Always ROLLBACK before releasing a connection with an open transaction.
+      // Without this, the connection returns to the pool in a broken state and the next
+      // request that picks it up will immediately fail with "transaction aborted".
+      await client.query("ROLLBACK");
       client.release();
       return { error: "No services found." };
     }
@@ -632,41 +636,77 @@ export async function addWalkInBookingAction(formData: FormData) {
     const totalDuration = dbServices.reduce((sum, s) => sum + s.duration_minutes, 0);
     const totalPrice = dbServices.reduce((sum, s) => sum + Number(s.price), 0);
 
-    // 4a. Smart queue assignment — each active queue is checked independently.
-    //     requestedStart = NOW so each queue's earliest free slot from this moment is found.
-    const queueResult = await assignQueue(
-      salon.id,
-      addMinutes(new Date(), 2), // use a fresh "now" for the initial search window
-      totalDuration
+    // BUG-02 FIX: Lock all active queue rows INSIDE the transaction before computing
+    // the slot. Any concurrent walk-in transaction that tries to also lock these rows
+    // will block here until we COMMIT, then it re-reads our inserted appointment and
+    // naturally picks the next available slot — eliminating the race condition.
+    const lockedQueuesRes = await client.query<{ id: string; name: string }>(
+      `SELECT id, name FROM public.queues
+       WHERE salon_id = $1 AND is_active = true ORDER BY name ASC FOR UPDATE`,
+      [salon.id]
     );
+    const lockedQueues = lockedQueuesRes.rows;
 
-    // Re-sample "now" RIGHT HERE — after all async DB work — so the stored start_time
-    // is never stale from before assignQueue's round-trips completed.
     const now = new Date();
     const requestedStart = addMinutes(now, 2); // 2-min grace for walk-in
-
-    // If queue found, use their computed available start; otherwise queue after the salon's latest end
     let startTime: Date;
-    const queueId = queueResult?.queueId ?? null;
+    let queueId: string | null = null;
 
-    if (queueResult) {
-      // Use queue's own next available slot, but ensure it's not in the past
-      startTime = queueResult.assignedStartUtc < requestedStart
-        ? requestedStart
-        : queueResult.assignedStartUtc;
+    if (lockedQueues.length > 0) {
+      // Inline queue assignment using the locked transaction client.
+      // Runs after the lock, so it sees the authoritative latest state.
+      const requiredDurMs = (totalDuration + APPOINTMENT_BUFFER_MINUTES) * 60000;
+      let bestQueueId: string | null = null;
+      let bestStart: Date = new Date(8640000000000000); // sentinel: far future
+
+      for (const queue of lockedQueues) {
+        const busyRes = await client.query<{ start_time: string; end_time: string }>(
+          `SELECT start_time, end_time FROM public.appointments
+           WHERE salon_id = $1 AND queue_id = $2 AND is_deleted = false
+             AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
+             AND end_time > $3 AND start_time < $4
+           ORDER BY start_time ASC`,
+          [
+            salon.id,
+            queue.id,
+            requestedStart.toISOString(),
+            addMinutes(requestedStart, 24 * 60).toISOString(),
+          ]
+        );
+
+        let availableAt = new Date(requestedStart);
+        for (const row of busyRes.rows) {
+          const aptStart = new Date(row.start_time);
+          const aptEnd = new Date(row.end_time);
+          if (aptStart.getTime() - availableAt.getTime() >= requiredDurMs) break;
+          const next = addMinutes(aptEnd, APPOINTMENT_BUFFER_MINUTES);
+          if (next > availableAt) availableAt = next;
+        }
+
+        if (availableAt < bestStart) {
+          bestStart = availableAt;
+          bestQueueId = queue.id;
+        }
+      }
+
+      queueId = bestQueueId;
+      startTime = !bestQueueId || bestStart < requestedStart ? requestedStart : bestStart;
     } else {
-      // No queue configured — fall back to salon-level queue
+      // No queues configured — lock the salon row and use the single global timeline.
+      await client.query("SELECT id FROM public.salons WHERE id = $1 FOR UPDATE", [salon.id]);
+
       const lastAptRes = await client.query(
-        `SELECT end_time FROM public.appointments 
-         WHERE salon_id = $1 AND status = 'confirmed'
-         AND end_time > NOW()
+        `SELECT end_time FROM public.appointments
+         WHERE salon_id = $1 AND is_deleted = false
+           AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
+           AND end_time > NOW()
          ORDER BY end_time DESC LIMIT 1`,
         [salon.id]
       );
       const lastApt = lastAptRes.rows[0];
       startTime = requestedStart;
       if (lastApt && new Date(lastApt.end_time) > now) {
-        startTime = addMinutes(new Date(lastApt.end_time), 2);
+        startTime = addMinutes(new Date(lastApt.end_time), APPOINTMENT_BUFFER_MINUTES);
       }
     }
 

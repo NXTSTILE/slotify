@@ -592,11 +592,50 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
       return;
     }
 
-    const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
-
+    // BUG-01 FIX: Move everything into one atomic transaction with row-level locking.
     const client = await db.pool.connect();
     try {
       await client.query("BEGIN");
+
+      // BUG-01 FIX: Lock the queue row (or the salon row when no queues are configured).
+      // Any concurrent transaction trying to lock the same row will WAIT here until
+      // we COMMIT, guaranteeing it sees our inserted appointment before it picks a slot.
+      if (assignedQueueId) {
+        await client.query(
+          "SELECT id FROM public.queues WHERE id = $1 FOR UPDATE",
+          [assignedQueueId]
+        );
+      } else {
+        await client.query(
+          "SELECT id FROM public.salons WHERE id = $1 FOR UPDATE",
+          [salon.id]
+        );
+      }
+
+      // BUG-01 FIX: Re-verify the slot is still free after acquiring the lock.
+      // Between pre-computing the slot and reaching here, another request may have
+      // inserted an appointment for the same window.
+      const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
+      const conflictRes = await client.query<{ count: string }>(
+        `SELECT COUNT(*) as count FROM public.appointments
+         WHERE salon_id = $1
+           AND (queue_id = $2 OR ($2::uuid IS NULL AND queue_id IS NULL))
+           AND is_deleted = false
+           AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
+           AND start_time < $3 AND end_time > $4`,
+        [salon.id, assignedQueueId ?? null, endTime.toISOString(), assignedStartUtc.toISOString()]
+      );
+
+      if (Number(conflictRes.rows[0].count) > 0) {
+        await client.query("ROLLBACK");
+        client.release();
+        await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+          toE164: customerPhone,
+          body: "⚠️ That slot was just taken by another booking. Please send *hi* to see the next available time.",
+        }));
+        await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+        return;
+      }
 
       // Upsert customer
       let customerId: string;
@@ -608,10 +647,11 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
         customerId = ins.rows[0].id;
       }
 
-      // Insert appointment directly as confirmed — first come first served
+      // BUG-03 FIX: Insert as 'pending' — slot is held but not confirmed until the customer
+      // provides their name. If they abandon the flow, the slot is freed after 5 minutes.
       const aptInsert = await client.query(
         `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, queue_id)
-         VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false, $7) RETURNING id`,
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
         [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, assignedQueueId ?? null]
       );
       const appointmentId = aptInsert.rows[0].id;
@@ -634,7 +674,7 @@ async function handleSelectingSubservices(salon: SalonRow, customerPhone: string
       const svcSummary = list.map((s) => `• ${s.name}`).join("\n");
       await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
         toE164: customerPhone,
-        body: `✅ *Your slot is confirmed!*\n\n*Services:*\n${svcSummary}\n\n*When:* ${timeStr}\n*Total:* ₹${totalPrice.toFixed(2)}\n\n✍️ *Please reply with your full name to complete booking:*`,
+        body: `✅ *Your slot is reserved!*\n\n*Services:*\n${svcSummary}\n\n*When:* ${timeStr}\n*Total:* ₹${totalPrice.toFixed(2)}\n\n✍️ *Please reply with your full name to confirm your booking:*`,
       }));
     } catch (err: any) {
       await client.query("ROLLBACK").catch(() => {});
@@ -661,12 +701,14 @@ async function handleConfirmingName(salon: SalonRow, customerPhone: string, body
     return;
   }
 
+  // BUG-03 FIX: Check for 'pending' status — the appointment was inserted as pending
+  // and is awaiting name confirmation. It becomes 'confirmed' in this very step.
   const checkRes = await db.query(
-    `SELECT start_time, total_price FROM public.appointments WHERE id = $1 AND salon_id = $2 AND status = 'confirmed' LIMIT 1`,
+    `SELECT start_time, total_price FROM public.appointments WHERE id = $1 AND salon_id = $2 AND status = 'pending' LIMIT 1`,
     [appointmentId, salon.id]
   );
   if (checkRes.rows.length === 0) {
-    // Appointment no longer exists — restart
+    // Appointment no longer exists or was already confirmed/cancelled — restart
     await ensureConversationRow(salon.id, customerPhone, "SELECTING_GENDER", {});
     await sendGenderMenu(salon, customerPhone);
     return;
@@ -677,6 +719,12 @@ async function handleConfirmingName(salon: SalonRow, customerPhone: string, body
   try {
     await client.query("BEGIN");
     await client.query("UPDATE public.customers SET name = $1 WHERE salon_id = $2 AND phone = $3", [name, salon.id, customerPhone]);
+    // BUG-03 FIX: Atomically promote the appointment from 'pending' to 'confirmed'
+    // now that the customer has provided their name and completed the booking flow.
+    await client.query(
+      "UPDATE public.appointments SET status = 'confirmed' WHERE id = $1 AND salon_id = $2 AND status = 'pending'",
+      [appointmentId, salon.id]
+    );
     await client.query("INSERT INTO public.notifications (salon_id, type, appointment_id, is_read) VALUES ($1, 'new_booking', $2, false)", [salon.id, appointmentId]);
     await client.query("COMMIT");
   } catch (err: any) {
@@ -745,11 +793,47 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
     assignedStartUtc = queueSlot > travelReady ? queueSlot : travelReady;
   }
 
-  const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
-
+  // BUG-01 FIX: Atomic lock + conflict re-check + insert for the location path.
+  const locationQueueId = ctx.assignedQueueId ?? null;
   const client = await db.pool.connect();
   try {
     await client.query("BEGIN");
+
+    // BUG-01 FIX: Lock the queue (or salon) row to serialize concurrent bookings.
+    if (locationQueueId) {
+      await client.query(
+        "SELECT id FROM public.queues WHERE id = $1 FOR UPDATE",
+        [locationQueueId]
+      );
+    } else {
+      await client.query(
+        "SELECT id FROM public.salons WHERE id = $1 FOR UPDATE",
+        [salon.id]
+      );
+    }
+
+    // BUG-01 FIX: Re-verify the slot is still available after acquiring the lock.
+    const endTime = addMinutes(assignedStartUtc, totalDur + APPOINTMENT_BUFFER_MINUTES);
+    const conflictRes = await client.query<{ count: string }>(
+      `SELECT COUNT(*) as count FROM public.appointments
+       WHERE salon_id = $1
+         AND (queue_id = $2 OR ($2::uuid IS NULL AND queue_id IS NULL))
+         AND is_deleted = false
+         AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
+         AND start_time < $3 AND end_time > $4`,
+      [salon.id, locationQueueId, endTime.toISOString(), assignedStartUtc.toISOString()]
+    );
+
+    if (Number(conflictRes.rows[0].count) > 0) {
+      await client.query("ROLLBACK");
+      client.release();
+      await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
+        toE164: customerPhone,
+        body: "⚠️ That slot was just taken by another booking. Please send *hi* to see the next available time.",
+      }));
+      await ensureConversationRow(salon.id, customerPhone, "IDLE", {});
+      return;
+    }
 
     let customerId: string;
     const custRes = await client.query("SELECT id FROM public.customers WHERE salon_id = $1 AND phone = $2 LIMIT 1", [salon.id, customerPhone]);
@@ -760,11 +844,11 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
       customerId = ins.rows[0].id;
     }
 
-    // Insert directly as confirmed — first come first served
+    // BUG-03 FIX: Insert as 'pending' — confirmed only after name is provided.
     const aptInsert = await client.query(
       `INSERT INTO public.appointments (salon_id, customer_id, start_time, end_time, total_duration_minutes, total_price, status, reminder_sent, queue_id)
-       VALUES ($1, $2, $3, $4, $5, $6, 'confirmed', false, $7) RETURNING id`,
-      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, ctx.assignedQueueId ?? null]
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', false, $7) RETURNING id`,
+      [salon.id, customerId, assignedStartUtc.toISOString(), endTime.toISOString(), totalDur, totalPrice, locationQueueId]
     );
     const appointmentId = aptInsert.rows[0].id;
 
@@ -786,7 +870,7 @@ async function handleAskingLocation(salon: SalonRow, customerPhone: string, inco
     const svcSummary = list.map((s) => `• ${s.name}`).join("\n");
     await sendAuth(salon, (pid, tok) => sendWhatsAppText(pid, tok, {
       toE164: customerPhone,
-      body: `✅ *Your slot is confirmed!*\n\n*Services:*\n${svcSummary}\n\n*When:* ${timeStr}\n*Total:* ₹${totalPrice.toFixed(2)}\n\n✍️ *Please reply with your full name to complete booking:*`,
+      body: `✅ *Your slot is reserved!*\n\n*Services:*\n${svcSummary}\n\n*When:* ${timeStr}\n*Total:* ₹${totalPrice.toFixed(2)}\n\n✍️ *Please reply with your full name to confirm your booking:*`,
     }));
   } catch (err: any) {
     await client.query("ROLLBACK").catch(() => {});

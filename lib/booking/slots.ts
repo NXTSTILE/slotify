@@ -42,7 +42,8 @@ export async function findEarliestSlotStart(
 
   let queryText = `
     SELECT start_time, end_time FROM public.appointments 
-    WHERE salon_id = $1 AND is_deleted = false AND status = 'confirmed'
+    WHERE salon_id = $1 AND is_deleted = false
+      AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
       AND end_time > $2 AND start_time < $3
   `;
   const params: any[] = [salonId, sessionStart.toISOString(), searchEnd.toISOString()];

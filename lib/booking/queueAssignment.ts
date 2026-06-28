@@ -49,7 +49,7 @@ export async function assignQueue(
        WHERE salon_id = $1
          AND queue_id = $2
          AND is_deleted = false
-         AND status = 'confirmed'
+         AND (status = 'confirmed' OR (status = 'pending' AND created_at > NOW() - INTERVAL '5 minutes'))
          AND end_time > $3
          AND start_time < $4
        ORDER BY start_time ASC`,

@@ -1,3 +1,9 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ARCHIVED — This Dockerfile is no longer used for production deployment.
+# The app is deployed on Vercel (see vercel.json).
+# Kept for reference and local Docker-based development only.
+# ─────────────────────────────────────────────────────────────────────────────
+
 FROM node:18-alpine AS base
 
 # Install dependencies only when needed

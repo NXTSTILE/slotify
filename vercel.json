@@ -1,0 +1,29 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+
+  "framework": "nextjs",
+
+  "regions": ["bom1"],
+
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "*/30 * * * *"
+    }
+  ],
+
+  "functions": {
+    "app/api/cron/reminders/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/whatsapp/webhook/route.ts": {
+      "maxDuration": 15
+    },
+    "app/api/debug-db/route.ts": {
+      "maxDuration": 10
+    },
+    "app/api/full-diag/route.ts": {
+      "maxDuration": 15
+    }
+  }
+}

@@ -5,8 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "node run-migrations.js && node server.js",
-    "lint": "next lint"
+    "start": "next start",
+    "lint": "next lint",
+    "migrate:prod": "node scripts/run-migrations-prod.js",
+    "migrate:dry-run": "node scripts/run-migrations-prod.js --dry-run"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

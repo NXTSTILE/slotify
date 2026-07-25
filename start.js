@@ -1,7 +1,12 @@
 /**
- * Unified Bootstrap Runner
- * Runs database migrations first, then boots the Next.js production server.
- * Ensures the entire container lifecycle remains in a single Node.js process.
+ * DOCKER ENTRYPOINT ONLY — Not used on Vercel.
+ *
+ * Vercel manages the Next.js process lifecycle natively via `next start`.
+ * This file is the CMD entrypoint for the Docker container (see Dockerfile).
+ * It runs DB migrations then boots the Next.js standalone server.
+ *
+ * For production migrations on Vercel, use:
+ *   node scripts/run-migrations-prod.js
  */
 
 const runMigrations = require('./run-migrations.js');

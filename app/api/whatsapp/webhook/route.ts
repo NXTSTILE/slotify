@@ -6,6 +6,8 @@ import { verifyWebhookSignature } from "@/lib/whatsapp/verify";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+// Vercel: max function execution time in seconds (matches vercel.json).
+export const maxDuration = 15;
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -132,10 +134,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true }, { status: 200 });
   }
 
-  // Process synchronously so logs appear before response
-  void processPayload(payload, logId).catch((e) =>
-    console.error("[webhook] async process failed", e)
-  );
+  // IMPORTANT: Must await before returning — Vercel terminates the function
+  // as soon as the response is sent, so fire-and-forget patterns lose all async work.
+  try {
+    await processPayload(payload, logId);
+  } catch (e) {
+    console.error("[webhook] process failed", e);
+  }
 
   return NextResponse.json({ ok: true }, { status: 200 });
 }
